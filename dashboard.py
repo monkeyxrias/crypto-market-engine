@@ -4,10 +4,24 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 from datetime import datetime
+import requests
 
 import data
 import features
 from model import ensure_model_exists, load_model, create_labels
+
+# ==============================
+# HELPERS
+# ==============================
+def send_discord_alert(message: str):
+    url = st.secrets.get("DISCORD_WEBHOOK_URL", "")
+    if not url:
+        return
+    try:
+        requests.post(url, json={"content": message}, timeout=10)
+    except Exception:
+        # Don't crash the app if Discord is down
+        pass
 
 # ==============================
 # PAGE SETUP
@@ -37,6 +51,8 @@ refresh_minutes = st.sidebar.slider(
     "Auto-refresh (minutes)", min_value=1, max_value=30, value=5
 )
 
+enable_alerts = st.sidebar.toggle("Discord alerts", value=False)
+
 # Auto refresh
 st_autorefresh(interval=refresh_minutes * 60 * 1000, key="refresh")
 
@@ -54,17 +70,19 @@ else:
 # ==============================
 # ENSURE MODEL EXISTS (DEPLOY SAFE)
 # ==============================
-# Train+save model on first cloud run if missing
 ensure_model_exists("BTC-USD")
-
-# Load model (no caching until deployment is stable)
 clf, scaler = load_model()
 
 # ==============================
-# SIGNAL HISTORY
+# SIGNAL HISTORY + LAST STATE
 # ==============================
 if "signal_history" not in st.session_state:
     st.session_state.signal_history = []
+
+# Track last decision to avoid spam
+state_key = f"last_state__{ticker}__{mode}"
+if state_key not in st.session_state:
+    st.session_state[state_key] = None
 
 # ==============================
 # LOAD DATA
@@ -117,6 +135,32 @@ else:
 now_utc = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
 # ==============================
+# ALERT ON STATE CHANGE
+# ==============================
+current_state = {
+    "allow": bool(allow),
+    "ma_long": int(ma_long),
+    "exposure": float(exposure),
+}
+
+previous_state = st.session_state[state_key]
+
+if enable_alerts and previous_state is not None and current_state != previous_state:
+    msg = (
+        f"**Market Engine Update** ({ticker}, {mode})\n"
+        f"- Time: {now_utc}\n"
+        f"- Status: {'ALLOWED ✅' if allow else 'BLOCKED ⛔'}\n"
+        f"- Exposure: {exposure:.2f}\n"
+        f"- MA Signal: {ma_long:.0f}\n"
+        f"- p(Trend): {p_trend:.3f}\n"
+        f"- p(Unknown): {p_unknown:.3f}"
+    )
+    send_discord_alert(msg)
+
+# Update stored state (do this after sending)
+st.session_state[state_key] = current_state
+
+# ==============================
 # RECORD SIGNAL
 # ==============================
 signal = {
@@ -151,7 +195,7 @@ if mode != "ma_only":
     st.caption(f"Gate: p(Trend) ≥ {trend_thr} AND p(Unknown) < {unknown_thr}")
 
 # ==============================
-# MARKET CONTEXT (HUMAN EXPLANATION)
+# MARKET CONTEXT
 # ==============================
 if p_trend >= 0.55:
     context = "Trend conditions detected — directional moves are more likely."
@@ -166,7 +210,6 @@ st.info(f"**Market context:** {context}")
 # FEATURE SNAPSHOT
 # ==============================
 st.subheader("Latest Features")
-
 f1, f2, f3 = st.columns(3)
 f1.metric("Trend", f"{float(latest['trend']):.5f}")
 f2.metric("Volatility", f"{float(latest['volatility']):.5f}")
@@ -176,24 +219,20 @@ f3.metric("Return", f"{float(latest['return']):.5f}")
 # REGIME CONFIDENCE (NOW)
 # ==============================
 st.subheader("Market Regime Confidence (Neutral is common)")
-
 probs_df = pd.DataFrame({"Regime": classes, "Probability": probs}).sort_values("Probability", ascending=False)
 st.bar_chart(probs_df.set_index("Regime")["Probability"])
-
-st.caption("Note: **Unknown** is a normal state and usually means no strong trend or extreme volatility is detected.")
+st.caption("Note: **Unknown** is normal and usually means no strong trend or extreme volatility is detected.")
 
 # ==============================
-# REGIME CONFIDENCE (RECENT)
+# RECENT CONFIDENCE
 # ==============================
 st.subheader("Market Regime Confidence (Recent)")
 
 hist_df = pd.DataFrame(st.session_state.signal_history)
-
 if not hist_df.empty:
     hist_df = hist_df[(hist_df["ticker"] == ticker) & (hist_df["mode"] == mode)].copy()
     hist_df["time_dt"] = pd.to_datetime(hist_df["time"], format="%Y-%m-%d %H:%M UTC", errors="coerce")
     hist_df = hist_df.dropna(subset=["time_dt"]).sort_values("time_dt").tail(80)
-
     line_df = hist_df.set_index("time_dt")[["p_trend", "p_unknown"]]
     st.line_chart(line_df)
 else:
@@ -219,7 +258,6 @@ conditions are usually more favorable.
 # PRICE CHART
 # ==============================
 st.subheader(f"{ticker} Price (Recent)")
-
 fig, ax = plt.subplots()
 df["Close"].tail(250).plot(ax=ax)
 ax.set_ylabel("Price")
