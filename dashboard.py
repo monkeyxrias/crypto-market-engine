@@ -479,6 +479,73 @@ with c2:
     )
 
 st.write("")
+st.write("")
+
+m1, m2, m3, m4 = st.columns([1, 1, 1, 1], gap="large")
+
+# Safely read feature values (in case provider hiccups)
+latest_return = float(latest.get("return", np.nan))
+latest_vol = float(latest.get("volatility", np.nan))
+latest_trend = float(latest.get("trend", np.nan))
+
+ma_fast_val = float(df_ma["ma_fast"].iloc[-1])
+ma_slow_val = float(df_ma["ma_slow"].iloc[-1])
+
+def _fmt(x, nd=5):
+    if x is None or (isinstance(x, float) and np.isnan(x)):
+        return "—"
+    return f"{x:.{nd}f}"
+
+with m1:
+    st.markdown(
+        f"""
+<div class="card">
+  <div class="card-title">Latest return</div>
+  <div class="big mono">{_fmt(latest_return, 5)}</div>
+  <div style="opacity:0.70; margin-top:6px;">Most recent bar return</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+with m2:
+    st.markdown(
+        f"""
+<div class="card">
+  <div class="card-title">Volatility</div>
+  <div class="big mono">{_fmt(latest_vol, 5)}</div>
+  <div style="opacity:0.70; margin-top:6px;">Recent realised volatility</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+with m3:
+    st.markdown(
+        f"""
+<div class="card">
+  <div class="card-title">Trend</div>
+  <div class="big mono">{_fmt(latest_trend, 5)}</div>
+  <div style="opacity:0.70; margin-top:6px;">Trend strength feature</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+with m4:
+    st.markdown(
+        f"""
+<div class="card">
+  <div class="card-title">Moving averages</div>
+  <div class="mono" style="font-size:1.05rem;">
+    Fast: <b>{_fmt(ma_fast_val, 2)}</b><br/>
+    Slow: <b>{_fmt(ma_slow_val, 2)}</b>
+  </div>
+  <div style="opacity:0.70; margin-top:6px;">Fast={fast} • Slow={slow}</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
 
 ch1, ch2 = st.columns([1.35, 1.0], gap="large")
 
