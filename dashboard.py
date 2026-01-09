@@ -61,8 +61,9 @@ def _mark_sent(state: Dict[str, Any], key: str) -> None:
 st.set_page_config(page_title="Crypto Market Engine", layout="wide")
 st.title("Crypto Market Engine")
 st.caption("Decision support tool • MA baseline + AI regime filter (not auto-trading)")
-st.sidebar.caption("DASHBOARD VERSION: 2026-01-09 v3 (Advanced Setup hidden test)")
 
+# Version stamp (helps confirm deploy)
+st.sidebar.caption("DASHBOARD VERSION: 2026-01-09 v4 (Neutral naming + What to do)")
 
 # ==============================
 # SIDEBAR SETTINGS
@@ -137,13 +138,13 @@ st_autorefresh(interval=refresh_minutes * 60 * 1000, key="refresh")
 # ==============================
 if mode == "conservative":
     trend_thr = 0.75
-    unknown_thr = 0.50
+    neutral_thr = 0.50
 elif mode == "balanced":
     trend_thr = 0.50
-    unknown_thr = 0.50
+    neutral_thr = 0.50
 else:
     trend_thr = None
-    unknown_thr = None
+    neutral_thr = None
 
 
 # ==============================
@@ -198,7 +199,7 @@ classes = clf.classes_
 prob = dict(zip(classes, probs))
 
 p_trend = float(prob.get("Trend", 0.0))
-p_unknown = float(prob.get("Unknown", 0.0))
+p_neutral = float(prob.get("Unknown", 0.0))  # model label is Unknown; user-facing is Neutral
 
 
 # ==============================
@@ -208,7 +209,7 @@ if mode == "ma_only":
     allow = True
     exposure = ma_long
 else:
-    allow = (p_trend >= trend_thr) and (p_unknown < unknown_thr)
+    allow = (p_trend >= trend_thr) and (p_neutral < neutral_thr)
     exposure = ma_long if allow else 0.0
 
 now_utc = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
@@ -227,7 +228,7 @@ current_state = {
     "ma_long": int(ma_long),
     "exposure": float(exposure),
     "p_trend": float(p_trend),
-    "p_unknown": float(p_unknown),
+    "p_neutral": float(p_neutral),
 }
 
 previous_state = alert_state.get(alert_key_state)
@@ -246,14 +247,18 @@ else:
 
     if enable_alerts and important_change and _should_send_with_cooldown(alert_state, alert_key_sent, cooldown_s):
         headline = "🟢 ENTRY" if entry_event else "🔴 EXIT"
-        action_line = "Trading conditions have turned favourable." if entry_event else "Trading conditions have deteriorated."
+        action_line = (
+            "Trading conditions have turned favourable."
+            if entry_event else
+            "Trading conditions have deteriorated."
+        )
 
         msg = (
             f"{headline} — {ticker} ({mode})\n"
             f"{action_line}\n\n"
             f"Exposure: {exposure:.2f}\n"
             f"Trend confidence: {p_trend:.2f}\n"
-            f"Neutral confidence: {p_unknown:.2f}\n"
+            f"Neutral confidence: {p_neutral:.2f}\n"
             f"Time: {now_utc}"
         )
 
@@ -279,7 +284,7 @@ signal = {
     "mode": mode,
     "ma_signal": int(ma_long),
     "p_trend": round(p_trend, 3),
-    "p_unknown": round(p_unknown, 3),
+    "p_neutral": round(p_neutral, 3),
     "allowed": bool(allow),
     "exposure": round(float(exposure), 2),
 }
@@ -297,21 +302,32 @@ col1, col2, col3, col4, col5 = st.columns([1.3, 1, 1, 1, 1.5])
 status_text = "ALLOWED ✅" if allow else "BLOCKED ⛔"
 
 col1.metric("Status", status_text)
-col2.metric("Exposure", f"{exposure:.2f}")
+col2.metric("Recommended Exposure", f"{exposure:.2f}")
 col3.metric("MA Signal", f"{ma_long:.0f}")
 col4.metric("Mode", mode)
 col5.metric("Last update", now_utc)
 
 if mode != "ma_only":
-    st.caption(f"Gate: p(Trend) ≥ {trend_thr} AND p(Unknown) < {unknown_thr}")
+    st.caption(f"Gate: Trend confidence ≥ {trend_thr} AND Neutral confidence < {neutral_thr}")
 
+# ==============================
+# WHAT SHOULD I DO?
+# ==============================
+if allow and ma_long == 1.0:
+    guidance = "✅ Conditions favourable and MA is long — long exposure is permitted."
+elif allow and ma_long == 0.0:
+    guidance = "ℹ️ Conditions favourable, but MA is not long — no long exposure right now."
+else:
+    guidance = "⛔ Conditions unfavourable — stand aside (no exposure)."
+
+st.success(f"**What should I do?** {guidance}")
 
 # ==============================
 # MARKET CONTEXT
 # ==============================
 if p_trend >= 0.55:
     context = "Trend conditions detected — directional moves are more likely."
-elif p_unknown >= 0.50:
+elif p_neutral >= 0.50:
     context = "Neutral / consolidation environment — edge is low (this is normal)."
 else:
     context = "Transitional or unstable market — conditions are uncertain."
@@ -334,6 +350,10 @@ f3.metric("Return", f"{float(latest['return']):.5f}")
 # ==============================
 st.subheader("Market Regime Confidence (Neutral is common)")
 probs_df = pd.DataFrame({"Regime": classes, "Probability": probs}).sort_values("Probability", ascending=False)
+
+# Rename Unknown -> Neutral for display only
+probs_df["Regime"] = probs_df["Regime"].replace({"Unknown": "Neutral"})
+
 st.bar_chart(probs_df.set_index("Regime")["Probability"])
 st.caption("Note: **Neutral** is normal and usually means no strong trend or extreme volatility is detected.")
 
@@ -348,7 +368,9 @@ if not hist_df.empty:
     hist_df = hist_df[(hist_df["ticker"] == ticker) & (hist_df["mode"] == mode)].copy()
     hist_df["time_dt"] = pd.to_datetime(hist_df["time"], format="%Y-%m-%d %H:%M UTC", errors="coerce")
     hist_df = hist_df.dropna(subset=["time_dt"]).sort_values("time_dt").tail(80)
-    line_df = hist_df.set_index("time_dt")[["p_trend", "p_unknown"]]
+
+    # Use neutral naming consistently
+    line_df = hist_df.set_index("time_dt")[["p_trend", "p_neutral"]].rename(columns={"p_neutral": "p_neutral (Neutral)"})
     st.line_chart(line_df)
 else:
     st.info("No signal history yet. Leave the dashboard open for a few refreshes.")
@@ -362,10 +384,10 @@ st.markdown(
     """
 - **Trend** — the model detects statistically strong directional movement.
 - **High Volatility** — the market is unstable; risk is elevated.
-- **Unknown** — neutral conditions (most common), often consolidation.
+- **Neutral** — normal conditions (most common), often consolidation.
 
 **Design note:**  
-This system is intentionally quiet. When **Trend** confidence rises and **Unknown** falls,
+This system is intentionally quiet. When **Trend** confidence rises and **Neutral** confidence falls,
 conditions are usually more favorable.
 """
 )
@@ -387,6 +409,9 @@ st.pyplot(fig)
 # ==============================
 with st.expander("Recent Signals (details)"):
     if not hist_df.empty:
-        st.dataframe(hist_df.drop(columns=["time_dt"], errors="ignore")[::-1].tail(50), use_container_width=True)
+        show_df = hist_df.drop(columns=["time_dt"], errors="ignore").copy()
+        if "p_neutral" in show_df.columns:
+            show_df = show_df.rename(columns={"p_neutral": "p_neutral (Neutral)"})
+        st.dataframe(show_df[::-1].tail(50), use_container_width=True)
     else:
         st.write("No signals yet.")
