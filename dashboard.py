@@ -2,7 +2,7 @@ import os
 import json
 import time
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
@@ -54,60 +54,98 @@ def _mark_sent(state: Dict[str, Any], key: str) -> None:
 
 
 # ==============================
-# DATA HELPERS (ROBUST CLOSE EXTRACTION)
+# DATA NORMALIZATION (THE IMPORTANT FIX)
 # ==============================
-def _extract_close_series(df: pd.DataFrame) -> pd.Series:
+def _extract_close_series(raw: Any) -> pd.Series:
     """
-    Returns a 1-D Close series, even if df has MultiIndex columns or df["Close"] is a DataFrame.
-    Raises ValueError if close cannot be found.
+    Return a 1-D Close series from a raw DataFrame, handling:
+    - single columns
+    - MultiIndex columns (e.g., yfinance)
+    - df['Close'] returning a DataFrame
     """
-    if df is None or df.empty:
+    if raw is None:
+        raise ValueError("Price data is None.")
+    if not isinstance(raw, pd.DataFrame):
+        raise ValueError(f"Price data is not a DataFrame (got {type(raw)}).")
+    if raw.empty:
         raise ValueError("Price data is empty.")
 
-    # Case 1: Normal single-level columns
-    if "Close" in df.columns:
-        close_obj = df["Close"]
-        if isinstance(close_obj, pd.Series):
-            return close_obj
-        if isinstance(close_obj, pd.DataFrame) and close_obj.shape[1] >= 1:
-            return close_obj.iloc[:, 0]
+    # Simple case
+    if "Close" in raw.columns:
+        obj = raw["Close"]
+        if isinstance(obj, pd.Series):
+            return obj
+        if isinstance(obj, pd.DataFrame) and obj.shape[1] >= 1:
+            return obj.iloc[:, 0]
 
-    # Case 2: MultiIndex columns (common from yfinance)
-    if isinstance(df.columns, pd.MultiIndex):
-        # Try exact top-level 'Close'
+    # MultiIndex columns (common)
+    if isinstance(raw.columns, pd.MultiIndex):
+        # Try selecting level-0 name Close
         try:
-            close_df = df.xs("Close", axis=1, level=0, drop_level=False)
-            # close_df may still be multi-col (per-ticker)
-            if isinstance(close_df, pd.DataFrame):
-                # find the actual 'Close' columns in the first level
-                cols = [c for c in close_df.columns if (isinstance(c, tuple) and c[0] == "Close")]
-                if cols:
-                    series_or_df = close_df[cols]
-                    if isinstance(series_or_df, pd.DataFrame):
-                        return series_or_df.iloc[:, 0]
-                    return series_or_df
-                # fallback to first col
+            close_df = raw.xs("Close", axis=1, level=0, drop_level=False)
+            if isinstance(close_df, pd.DataFrame) and close_df.shape[1] >= 1:
                 return close_df.iloc[:, 0]
         except Exception:
             pass
 
-        # fallback: search any column tuple containing "Close"
-        for col in df.columns:
+        # Fallback: search tuple columns containing "close"
+        for col in raw.columns:
             if isinstance(col, tuple) and any(str(x).lower() == "close" for x in col):
-                s = df[col]
+                s = raw[col]
                 if isinstance(s, pd.Series):
                     return s
 
-    # Case 3: fuzzy search on column names (single index or flattened)
-    for c in df.columns:
+    # Fallback: fuzzy search
+    for c in raw.columns:
         if "close" in str(c).lower():
-            s = df[c]
-            if isinstance(s, pd.Series):
-                return s
-            if isinstance(s, pd.DataFrame) and s.shape[1] >= 1:
-                return s.iloc[:, 0]
+            obj = raw[c]
+            if isinstance(obj, pd.Series):
+                return obj
+            if isinstance(obj, pd.DataFrame) and obj.shape[1] >= 1:
+                return obj.iloc[:, 0]
 
-    raise ValueError(f"Could not find a usable Close series in columns: {list(df.columns)[:10]}...")
+    raise ValueError(f"Could not find Close column. Columns sample: {list(raw.columns)[:10]}")
+
+
+def _normalize_price_df(raw: pd.DataFrame) -> pd.DataFrame:
+    """
+    Produce a clean DF with:
+      - index: datetime if possible
+      - column: Close (float)
+    """
+    close = _extract_close_series(raw)
+    close = pd.to_numeric(close, errors="coerce")
+
+    # Determine datetime index
+    idx = None
+    if isinstance(raw.index, pd.DatetimeIndex):
+        idx = raw.index
+    elif "Date" in raw.columns:
+        dt = pd.to_datetime(raw["Date"], errors="coerce")
+        if dt.notna().any():
+            idx = dt
+    else:
+        # If close already has datetime-like index, use it
+        if isinstance(close.index, pd.DatetimeIndex):
+            idx = close.index
+
+    df_clean = pd.DataFrame({"Close": close.values})
+
+    # Apply index
+    if idx is not None and len(idx) == len(df_clean):
+        df_clean.index = pd.to_datetime(idx, errors="coerce")
+        df_clean = df_clean.dropna(axis=0, how="any")  # drop rows where index or close bad
+    else:
+        # fallback to synthetic time axis
+        df_clean = df_clean.dropna(subset=["Close"])
+        df_clean.index = pd.date_range(end=pd.Timestamp.utcnow(), periods=len(df_clean), freq="H")
+
+    df_clean = df_clean.sort_index()
+    df_clean["Close"] = pd.to_numeric(df_clean["Close"], errors="coerce")
+    df_clean = df_clean.dropna(subset=["Close"])
+    if df_clean.empty:
+        raise ValueError("After normalization, no valid Close data remains.")
+    return df_clean
 
 
 # ==============================
@@ -148,7 +186,7 @@ st.markdown(
 # ==============================
 st.sidebar.markdown("## ⚡ Market Regime Engine")
 st.sidebar.caption("Crypto-only MVP • Dark terminal UI")
-st.sidebar.caption("DASHBOARD VERSION: 2026-01-09 v5.2 (Close extraction fix)")
+st.sidebar.caption("DASHBOARD VERSION: 2026-01-09 v5.3 (Normalization fix)")
 
 st.sidebar.markdown("### Market")
 _ = st.sidebar.selectbox("Universe", ["Crypto"], index=0, disabled=True)
@@ -187,7 +225,10 @@ with st.sidebar.expander("Advanced / Setup"):
         if not webhook:
             st.session_state.discord_test_status = ("fail", "DISCORD_WEBHOOK_URL secret is missing/empty.")
         else:
-            ok, msg = send_discord_alert(webhook_url=webhook, content="✅ Test: Discord alerts are working! (Market Regime Engine)")
+            ok, msg = send_discord_alert(
+                webhook_url=webhook,
+                content="✅ Test: Discord alerts are working! (Market Regime Engine)"
+            )
             st.session_state.discord_test_status = ("ok", msg) if ok else ("fail", msg)
 
     status = st.session_state.discord_test_status
@@ -234,40 +275,27 @@ if "signal_history" not in st.session_state:
 
 
 # ==============================
-# LOAD DATA (ROBUST)
+# LOAD + NORMALIZE DATA (THIS PREVENTS ALL CLOSE ERRORS)
 # ==============================
-df = data.get_price_data(ticker)
+raw = data.get_price_data(ticker)
 
-# Extract a valid Close series and standardize it
 try:
-    close_series = _extract_close_series(df)
+    df = _normalize_price_df(raw)  # <-- guaranteed Close column
 except Exception as e:
-    st.error(f"Failed to extract Close price series: {e}")
+    st.error(f"Data normalization failed: {e}")
     st.stop()
 
-# Ensure we have a clean numeric Close column
-df = df.copy()
-df["Close"] = pd.to_numeric(close_series, errors="coerce")
-
-# Drop rows with missing Close
-df = df.dropna(subset=["Close"])
-if df.empty or len(df) < 80:
-    st.error("Not enough price history returned to run the engine. Try again shortly.")
+# Need enough history for MAs and features
+if len(df) < 120:
+    st.error("Not enough price history returned to run the engine (need ~120+ points). Try again shortly.")
     st.stop()
 
+# Compute features on a clean base
 df = features.compute_features(df)
 df = create_labels(df)
 
-# Create price frame for chart
-df_price = df.copy()
-if "Date" in df_price.columns:
-    df_price["Date"] = pd.to_datetime(df_price["Date"], errors="coerce")
-    df_price = df_price.dropna(subset=["Date"]).sort_values("Date")
-elif isinstance(df_price.index, pd.DatetimeIndex):
-    df_price = df_price.sort_index().reset_index().rename(columns={"index": "Date"})
-else:
-    df_price = df_price.reset_index(drop=True)
-    df_price["Date"] = pd.date_range(end=pd.Timestamp.utcnow(), periods=len(df_price), freq="H")
+# Chart frame
+df_price = df.reset_index().rename(columns={"index": "Date"})
 
 
 # ==============================
@@ -323,7 +351,7 @@ alert_state = _load_alert_state()
 alert_key_state = f"state::{ticker}::{mode}"
 alert_key_sent = f"last_sent::{ticker}::{mode}"
 
-current_state = {"allow": bool(allow), "exposure": float(exposure), "p_trend": float(p_trend), "p_neutral": float(p_neutral)}
+current_state = {"allow": bool(allow), "p_trend": float(p_trend), "p_neutral": float(p_neutral)}
 previous_state = alert_state.get(alert_key_state)
 
 if previous_state is None:
@@ -457,8 +485,6 @@ ch1, ch2 = st.columns([1.35, 1.0], gap="large")
 with ch1:
     st.markdown('<div class="card"><div class="card-title">Price (recent)</div>', unsafe_allow_html=True)
     price_tail = df_price.tail(300).copy()
-    price_tail["Close"] = pd.to_numeric(price_tail["Close"], errors="coerce")
-    price_tail = price_tail.dropna(subset=["Close", "Date"])
 
     price_chart = (
         alt.Chart(price_tail)
