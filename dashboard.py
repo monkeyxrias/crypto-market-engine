@@ -61,6 +61,7 @@ def _mark_sent(state: Dict[str, Any], key: str) -> None:
 st.set_page_config(page_title="Crypto Market Engine", layout="wide")
 st.title("Crypto Market Engine")
 st.caption("Decision support tool • MA baseline + AI regime filter (not auto-trading)")
+st.sidebar.caption("DASHBOARD VERSION: 2026-01-09 v3 (Advanced Setup hidden test)")
 
 
 # ==============================
@@ -97,35 +98,35 @@ cooldown_s = int(cooldown_minutes) * 60
 if "discord_test_status" not in st.session_state:
     st.session_state.discord_test_status = None  # ("pending"/"ok"/"fail", message)
 
-if st.sidebar.button("🔥 Send test Discord alert", use_container_width=True, key="discord_test_btn"):
-    st.session_state.discord_test_status = ("pending", "Sending test alert...")
+# Hide test button under Advanced / Setup (for production readiness)
+with st.sidebar.expander("Advanced / Setup"):
+    if st.button("Send test Discord alert", use_container_width=True, key="discord_test_btn"):
+        st.session_state.discord_test_status = ("pending", "Sending test alert...")
 
-    webhook = st.secrets.get("DISCORD_WEBHOOK_URL", "")
-    if not webhook:
-        st.session_state.discord_test_status = ("fail", "DISCORD_WEBHOOK_URL secret is missing/empty.")
-    else:
-        ok, msg = send_discord_alert(
-            webhook_url=webhook,
-            content="🔥 TEST: Discord alerts are working! (Crypto Market Engine / Streamlit Cloud)"
-        )
-        st.session_state.discord_test_status = ("ok", msg) if ok else ("fail", msg)
+        webhook = st.secrets.get("DISCORD_WEBHOOK_URL", "")
+        if not webhook:
+            st.session_state.discord_test_status = ("fail", "DISCORD_WEBHOOK_URL secret is missing/empty.")
+        else:
+            ok, msg = send_discord_alert(
+                webhook_url=webhook,
+                content="✅ Test: Discord alerts are working! (Crypto Market Engine)"
+            )
+            st.session_state.discord_test_status = ("ok", msg) if ok else ("fail", msg)
 
-# Show test status (always visible)
-status = st.session_state.discord_test_status
-if status:
-    kind, msg = status
-    if kind == "pending":
-        st.sidebar.info(msg)
-    elif kind == "ok":
-        st.sidebar.success(msg)
-    else:
-        st.sidebar.error(msg)
-        st.sidebar.caption("Tip: HTTP 401/403=invalid webhook, 404=wrong URL, timeout=requests/network")
+    status = st.session_state.discord_test_status
+    if status:
+        kind, msg = status
+        if kind == "pending":
+            st.info(msg)
+        elif kind == "ok":
+            st.success(msg)
+        else:
+            st.error(msg)
+            st.caption("Tip: HTTP 401/403=invalid webhook, 404=wrong URL, timeout=requests/network")
 
-# Quick secret visibility indicator
-st.sidebar.caption(
-    "Webhook loaded: " + ("YES ✅" if st.secrets.get("DISCORD_WEBHOOK_URL", "") else "NO ❌")
-)
+    st.caption(
+        "Webhook loaded: " + ("YES ✅" if st.secrets.get("DISCORD_WEBHOOK_URL", "") else "NO ❌")
+    )
 
 # Auto refresh
 st_autorefresh(interval=refresh_minutes * 60 * 1000, key="refresh")
@@ -214,14 +215,7 @@ now_utc = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
 
 # ==============================
-# ALERT LOGIC (REFINED)
-# - No first-run spam
-# - Alerts only on:
-#     * ENTRY (BLOCKED -> ALLOWED)
-#     * EXIT  (ALLOWED -> BLOCKED)
-#     * EXPOSURE CHANGE (0 <-> 1)
-# - Cooldown still applies
-# - Persistent across reruns
+# ALERT LOGIC (ENTRY/EXIT ONLY + COOLDOWN)
 # ==============================
 alert_state = _load_alert_state()
 
@@ -244,41 +238,23 @@ if previous_state is None:
     _save_alert_state(alert_state)
 else:
     prev_allow = bool(previous_state.get("allow", False))
-    prev_exposure = float(previous_state.get("exposure", 0.0))
-
-    allow_flip = (prev_allow != bool(allow))
-    exposure_flip = (prev_exposure != float(exposure))
 
     entry_event = (prev_allow is False and bool(allow) is True)
     exit_event = (prev_allow is True and bool(allow) is False)
 
-    # Optional: set True if you only want "ENTRY" alerts
-    alert_on_entries_only = False
-
-    if alert_on_entries_only:
-        important_change = entry_event or (prev_exposure == 0.0 and float(exposure) > 0.0)
-    else:
-        important_change = allow_flip or exposure_flip
+    important_change = entry_event or exit_event
 
     if enable_alerts and important_change and _should_send_with_cooldown(alert_state, alert_key_sent, cooldown_s):
-        if entry_event:
-            event_label = "ENTRY ✅ (Gate opened)"
-        elif exit_event:
-            event_label = "EXIT ⛔ (Gate closed)"
-        elif exposure_flip:
-            event_label = "EXPOSURE CHANGE 🔁"
-        else:
-            event_label = "UPDATE"
+        headline = "🟢 ENTRY" if entry_event else "🔴 EXIT"
+        action_line = "Trading conditions have turned favourable." if entry_event else "Trading conditions have deteriorated."
 
         msg = (
-            f"**Market Engine Alert** — {event_label}\n"
-            f"- Asset/Mode: {ticker} ({mode})\n"
-            f"- Time: {now_utc}\n"
-            f"- Status: {'ALLOWED ✅' if allow else 'BLOCKED ⛔'}\n"
-            f"- Exposure: {exposure:.2f}\n"
-            f"- MA Signal: {ma_long:.0f}\n"
-            f"- p(Trend): {p_trend:.3f}\n"
-            f"- p(Unknown): {p_unknown:.3f}"
+            f"{headline} — {ticker} ({mode})\n"
+            f"{action_line}\n\n"
+            f"Exposure: {exposure:.2f}\n"
+            f"Trend confidence: {p_trend:.2f}\n"
+            f"Neutral confidence: {p_unknown:.2f}\n"
+            f"Time: {now_utc}"
         )
 
         webhook = st.secrets.get("DISCORD_WEBHOOK_URL", "")
@@ -359,7 +335,7 @@ f3.metric("Return", f"{float(latest['return']):.5f}")
 st.subheader("Market Regime Confidence (Neutral is common)")
 probs_df = pd.DataFrame({"Regime": classes, "Probability": probs}).sort_values("Probability", ascending=False)
 st.bar_chart(probs_df.set_index("Regime")["Probability"])
-st.caption("Note: **Unknown** is normal and usually means no strong trend or extreme volatility is detected.")
+st.caption("Note: **Neutral** is normal and usually means no strong trend or extreme volatility is detected.")
 
 
 # ==============================
