@@ -343,9 +343,27 @@ if len(df) < 120:
 df = features.compute_features(df)
 df = create_labels(df)
 
-df_price = df.reset_index().rename(columns={"index": "Date"})
-# For charts, make Date tz-naive or Altair may warn; keep a clean datetime
-df_price["Date"] = pd.to_datetime(df_price["Date"], errors="coerce").dt.tz_convert(None)
+df_price = df.reset_index()
+
+# Ensure we have a 'Date' column regardless of index name
+if "Date" not in df_price.columns:
+    # pandas reset_index usually creates 'index' or the index name; fall back safely
+    if "index" in df_price.columns:
+        df_price = df_price.rename(columns={"index": "Date"})
+    else:
+        # last resort: first column produced by reset_index is the datetime index
+        df_price = df_price.rename(columns={df_price.columns[0]: "Date"})
+
+# Make Date tz-naive for Altair
+df_price["Date"] = pd.to_datetime(df_price["Date"], errors="coerce")
+if hasattr(df_price["Date"].dt, "tz_convert"):
+    # Only tz_convert if tz-aware
+    try:
+        df_price["Date"] = df_price["Date"].dt.tz_convert(None)
+    except TypeError:
+        # already tz-naive
+        pass
+
 
 
 # ==============================
