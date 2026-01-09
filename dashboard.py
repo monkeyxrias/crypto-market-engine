@@ -15,6 +15,11 @@ import features
 from model import ensure_model_exists, load_model, create_labels
 from alerts import send_discord_alert
 
+# ==============================
+# PLAN (Soft-launch: Pro Beta)
+# ==============================
+PLAN = "pro_beta"  # no paywall yet
+
 
 # ==============================
 # PERSISTENT COOLDOWN STATE (NOT SESSION-BASED)
@@ -179,7 +184,26 @@ st.markdown(
 # ==============================
 st.sidebar.markdown("## ⚡ Market Regime Engine")
 st.sidebar.caption("Crypto-only MVP • Dark terminal UI")
-st.sidebar.caption("DASHBOARD VERSION: 2026-01-09 v5.4 (UI polish pass)")
+st.sidebar.caption("DASHBOARD VERSION: 2026-01-09 v5.5 (Pro Beta framing)")
+
+# --- Plan card (Pro Beta) ---
+st.sidebar.markdown("### Plan")
+st.sidebar.markdown(
+    """
+<div class="card">
+  <div class="card-title">Plan</div>
+  <div class="big">Pro <span style="opacity:0.75;">(Beta)</span></div>
+  <div style="opacity:0.75; margin-top:8px;">
+    Multi-asset • Alerts • Advanced modes<br/>
+    Pricing coming soon.
+  </div>
+</div>
+""",
+    unsafe_allow_html=True,
+)
+
+if st.sidebar.button("Join early access / feedback", use_container_width=True):
+    st.sidebar.info("Send feedback (or ask for early access) — pricing + access will be announced soon.")
 
 st.sidebar.markdown("### Market")
 _ = st.sidebar.selectbox("Universe", ["Crypto"], index=0, disabled=True)
@@ -411,6 +435,7 @@ st.markdown(
   <div style="opacity:0.80; margin-top:6px;">{tagline}</div>
   <div class="hr"></div>
   <div style="display:flex; gap:16px; flex-wrap:wrap; opacity:0.85;">
+    <div><span class="mono">Plan</span>: <b>Pro (Beta)</b></div>
     <div><span class="mono">Mode</span>: <b>{mode}</b></div>
     <div><span class="mono">Last update</span>: <b>{now_utc}</b></div>
     <div><span class="mono">Alerts</span>: <b>{"ON" if enable_alerts else "OFF"}</b></div>
@@ -492,9 +517,7 @@ with c2:
 
 st.write("")
 
-# ==============================
-# LATEST METRICS ROW (RETURN / VOL / TREND / MA)
-# ==============================
+# Latest metrics row
 latest_return = float(latest.get("return", np.nan))
 latest_vol = float(latest.get("volatility", np.nan))
 latest_trend = float(latest.get("trend", np.nan))
@@ -554,9 +577,7 @@ with m4:
 
 st.write("")
 
-# ==============================
-# CHARTS ROW
-# ==============================
+# Charts row
 ch1, ch2 = st.columns([1.35, 1.0], gap="large")
 
 with ch1:
@@ -596,9 +617,7 @@ with ch2:
 
 st.write("")
 
-# ==============================
-# HOW IT WORKS CARD
-# ==============================
+# How it works
 st.markdown(
     """
 <div class="card">
@@ -618,9 +637,7 @@ st.markdown(
 
 st.write("")
 
-# ==============================
-# RECENT CONFIDENCE (LINE CHART) + DETAILS TABLE
-# ==============================
+# Recent confidence chart + details table
 hist_df = pd.DataFrame(st.session_state.signal_history)
 hist_df = hist_df[(hist_df["ticker"] == ticker) & (hist_df["mode"] == mode)].copy() if not hist_df.empty else hist_df
 
@@ -637,9 +654,7 @@ if not hist_df.empty:
             var_name="metric",
             value_name="value",
         )
-        long_df["metric"] = long_df["metric"].replace(
-            {"p_neutral": "Neutral", "p_trend": "Trend"}
-        )
+        long_df["metric"] = long_df["metric"].replace({"p_neutral": "Neutral", "p_trend": "Trend"})
 
         line = (
             alt.Chart(long_df)
@@ -659,7 +674,6 @@ with st.expander("Recent signals (details)"):
     if not hist_df.empty:
         show_df = hist_df.drop(columns=["time_dt"], errors="ignore").copy()
 
-        # Clean column names for users
         rename_map = {
             "p_trend": "Trend",
             "p_neutral": "Neutral",
@@ -671,8 +685,8 @@ with st.expander("Recent signals (details)"):
             "time": "Time",
         }
         show_df = show_df.rename(columns={k: v for k, v in rename_map.items() if k in show_df.columns})
-
         st.dataframe(show_df[::-1].tail(80), use_container_width=True)
     else:
         st.write("No signals yet.")
+
 
