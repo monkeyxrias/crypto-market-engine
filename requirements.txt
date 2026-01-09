@@ -6,4 +6,4 @@ numpy
 scikit-learn
 matplotlib
 joblib
-requests
+requests>=2.31.0
