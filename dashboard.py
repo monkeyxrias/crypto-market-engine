@@ -6,14 +6,13 @@ from typing import Dict, Any
 
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
-import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
+import altair as alt
 
 import data
 import features
 from model import ensure_model_exists, load_model, create_labels
-
 from alerts import send_discord_alert
 
 
@@ -38,7 +37,6 @@ def _save_alert_state(state: Dict[str, Any]) -> None:
         with open(ALERT_STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(state, f)
     except Exception:
-        # Streamlit Cloud FS can be ephemeral; don't crash if write fails
         pass
 
 
@@ -58,59 +56,112 @@ def _mark_sent(state: Dict[str, Any], key: str) -> None:
 # ==============================
 # PAGE SETUP
 # ==============================
-st.set_page_config(page_title="Crypto Market Engine", layout="wide")
-st.title("Crypto Market Engine")
-st.caption("Decision support tool • MA baseline + AI regime filter (not auto-trading)")
-
-# Version stamp (helps confirm deploy)
-st.sidebar.caption("DASHBOARD VERSION: 2026-01-09 v4 (Neutral naming + What to do)")
-
-# ==============================
-# SIDEBAR SETTINGS
-# ==============================
-st.sidebar.header("Settings")
-
-ticker = st.sidebar.selectbox(
-    "Asset",
-    ["BTC-USD", "ETH-USD", "SOL-USD"],
-    index=0
+st.set_page_config(
+    page_title="Market Regime Engine",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
+# Terminal-style CSS (minimal + clean)
+st.markdown(
+    """
+<style>
+/* tighten default padding a bit */
+.block-container { padding-top: 1.2rem; padding-bottom: 2.0rem; }
+
+/* cards */
+.card {
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.03);
+  border-radius: 16px;
+  padding: 16px 16px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+}
+
+.card-title {
+  font-size: 0.9rem;
+  letter-spacing: 0.08em;
+  opacity: 0.75;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.big {
+  font-size: 1.35rem;
+  font-weight: 700;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+/* subtle divider */
+.hr {
+  height: 1px;
+  background: rgba(255,255,255,0.08);
+  margin: 14px 0;
+}
+
+/* reduce top whitespace in sidebar headings */
+section[data-testid="stSidebar"] .stMarkdown h2 { margin-top: 0.2rem; }
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
+# ==============================
+# SIDEBAR (PRO)
+# ==============================
+st.sidebar.markdown("## ⚡ Market Regime Engine")
+st.sidebar.caption("Crypto-only MVP • Dark terminal UI")
+st.sidebar.caption("DASHBOARD VERSION: 2026-01-09 v5 (Dark + Pro layout)")
+
+st.sidebar.markdown("### Market")
+market = st.sidebar.selectbox("Universe", ["Crypto"], index=0, disabled=True)
+
+SUPPORTED_ASSETS = {
+    "BTC-USD": "Bitcoin (BTC)",
+    "ETH-USD": "Ethereum (ETH)",
+    "SOL-USD": "Solana (SOL)",
+}
+
+st.sidebar.markdown("### Asset")
+ticker = st.sidebar.selectbox(
+    "Select asset",
+    list(SUPPORTED_ASSETS.keys()),
+    format_func=lambda k: SUPPORTED_ASSETS.get(k, k),
+    index=0,
+)
+st.sidebar.caption("Supported assets (MVP): BTC, ETH, SOL")
+
+st.sidebar.markdown("### Strategy")
 mode = st.sidebar.selectbox(
     "Risk profile",
     ["balanced", "conservative", "ma_only"],
     index=0
 )
 
-refresh_minutes = st.sidebar.slider(
-    "Auto-refresh (minutes)", min_value=1, max_value=30, value=5
-)
+refresh_minutes = st.sidebar.slider("Auto-refresh (minutes)", 1, 30, 5)
 
-# --- Discord UI ---
-st.sidebar.markdown("---")
-st.sidebar.subheader("Discord Alerts")
-
-enable_alerts = st.sidebar.toggle("Discord alerts", value=False)
-
+st.sidebar.markdown("### Alerts")
+enable_alerts = st.sidebar.toggle("Enable Discord alerts", value=False)
 cooldown_minutes = st.sidebar.slider("Alert cooldown (minutes)", 1, 120, 15)
 cooldown_s = int(cooldown_minutes) * 60
 
-# Persistent test output that survives reruns/refresh
+# Advanced / Setup hidden tools
 if "discord_test_status" not in st.session_state:
     st.session_state.discord_test_status = None  # ("pending"/"ok"/"fail", message)
 
-# Hide test button under Advanced / Setup (for production readiness)
 with st.sidebar.expander("Advanced / Setup"):
     if st.button("Send test Discord alert", use_container_width=True, key="discord_test_btn"):
         st.session_state.discord_test_status = ("pending", "Sending test alert...")
-
         webhook = st.secrets.get("DISCORD_WEBHOOK_URL", "")
         if not webhook:
             st.session_state.discord_test_status = ("fail", "DISCORD_WEBHOOK_URL secret is missing/empty.")
         else:
             ok, msg = send_discord_alert(
                 webhook_url=webhook,
-                content="✅ Test: Discord alerts are working! (Crypto Market Engine)"
+                content="✅ Test: Discord alerts are working! (Market Regime Engine)"
             )
             st.session_state.discord_test_status = ("ok", msg) if ok else ("fail", msg)
 
@@ -123,7 +174,7 @@ with st.sidebar.expander("Advanced / Setup"):
             st.success(msg)
         else:
             st.error(msg)
-            st.caption("Tip: HTTP 401/403=invalid webhook, 404=wrong URL, timeout=requests/network")
+            st.caption("Tip: 401/403=invalid webhook, 404=wrong URL, timeout=requests/network")
 
     st.caption(
         "Webhook loaded: " + ("YES ✅" if st.secrets.get("DISCORD_WEBHOOK_URL", "") else "NO ❌")
@@ -148,14 +199,14 @@ else:
 
 
 # ==============================
-# ENSURE MODEL EXISTS (DEPLOY SAFE)
+# MODEL (DEPLOY SAFE)
 # ==============================
 ensure_model_exists("BTC-USD")
 clf, scaler = load_model()
 
 
 # ==============================
-# SIGNAL HISTORY (SESSION OK FOR CHARTS)
+# SESSION HISTORY (for charts)
 # ==============================
 if "signal_history" not in st.session_state:
     st.session_state.signal_history = []
@@ -167,6 +218,19 @@ if "signal_history" not in st.session_state:
 df = data.get_price_data(ticker)
 df = features.compute_features(df)
 df = create_labels(df)
+
+# Price series (ensure datetime index if available)
+df_price = df.copy()
+if "Date" in df_price.columns:
+    df_price["Date"] = pd.to_datetime(df_price["Date"], errors="coerce")
+    df_price = df_price.dropna(subset=["Date"]).sort_values("Date")
+elif isinstance(df_price.index, pd.DatetimeIndex):
+    df_price = df_price.sort_index()
+    df_price = df_price.reset_index().rename(columns={"index": "Date"})
+else:
+    # fallback: create a pseudo time axis
+    df_price = df_price.reset_index(drop=True)
+    df_price["Date"] = pd.date_range(end=pd.Timestamp.utcnow(), periods=len(df_price), freq="H")
 
 
 # ==============================
@@ -199,7 +263,7 @@ classes = clf.classes_
 prob = dict(zip(classes, probs))
 
 p_trend = float(prob.get("Trend", 0.0))
-p_neutral = float(prob.get("Unknown", 0.0))  # model label is Unknown; user-facing is Neutral
+p_neutral = float(prob.get("Unknown", 0.0))  # internal label is Unknown; user-facing is Neutral
 
 
 # ==============================
@@ -219,7 +283,6 @@ now_utc = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 # ALERT LOGIC (ENTRY/EXIT ONLY + COOLDOWN)
 # ==============================
 alert_state = _load_alert_state()
-
 alert_key_state = f"state::{ticker}::{mode}"
 alert_key_sent = f"last_sent::{ticker}::{mode}"
 
@@ -230,28 +293,19 @@ current_state = {
     "p_trend": float(p_trend),
     "p_neutral": float(p_neutral),
 }
-
 previous_state = alert_state.get(alert_key_state)
 
 if previous_state is None:
-    # First run for this ticker/mode: store but do NOT alert
     alert_state[alert_key_state] = current_state
     _save_alert_state(alert_state)
 else:
     prev_allow = bool(previous_state.get("allow", False))
-
     entry_event = (prev_allow is False and bool(allow) is True)
     exit_event = (prev_allow is True and bool(allow) is False)
 
-    important_change = entry_event or exit_event
-
-    if enable_alerts and important_change and _should_send_with_cooldown(alert_state, alert_key_sent, cooldown_s):
+    if enable_alerts and (entry_event or exit_event) and _should_send_with_cooldown(alert_state, alert_key_sent, cooldown_s):
         headline = "🟢 ENTRY" if entry_event else "🔴 EXIT"
-        action_line = (
-            "Trading conditions have turned favourable."
-            if entry_event else
-            "Trading conditions have deteriorated."
-        )
+        action_line = "Trading conditions have turned favourable." if entry_event else "Trading conditions have deteriorated."
 
         msg = (
             f"{headline} — {ticker} ({mode})\n"
@@ -264,19 +318,17 @@ else:
 
         webhook = st.secrets.get("DISCORD_WEBHOOK_URL", "")
         ok, info = send_discord_alert(webhook_url=webhook, content=msg)
-
         if ok:
             _mark_sent(alert_state, alert_key_sent)
         else:
             st.sidebar.error(f"Alert failed: {info}")
 
-    # Always store current state
     alert_state[alert_key_state] = current_state
     _save_alert_state(alert_state)
 
 
 # ==============================
-# RECORD SIGNAL (FOR CHARTS)
+# RECORD SIGNAL (FOR RECENT CHART)
 # ==============================
 signal = {
     "time": now_utc,
@@ -289,42 +341,48 @@ signal = {
     "exposure": round(float(exposure), 2),
 }
 st.session_state.signal_history.append(signal)
-st.session_state.signal_history = st.session_state.signal_history[-200:]
+st.session_state.signal_history = st.session_state.signal_history[-250:]
 
 
 # ==============================
-# TOP DECISION PANEL
+# HERO HEADER
 # ==============================
-st.subheader("Decision")
+asset_name = SUPPORTED_ASSETS.get(ticker, ticker)
+tagline = "Market regime filter that helps you avoid trading low-edge conditions."
 
-col1, col2, col3, col4, col5 = st.columns([1.3, 1, 1, 1, 1.5])
+st.markdown(
+    f"""
+<div class="card">
+  <div class="card-title">MARKET REGIME ENGINE</div>
+  <div class="big">{asset_name} <span class="mono" style="opacity:0.7;">({ticker})</span></div>
+  <div style="opacity:0.80; margin-top:6px;">{tagline}</div>
+  <div class="hr"></div>
+  <div style="display:flex; gap:16px; flex-wrap:wrap; opacity:0.85;">
+    <div><span class="mono">Mode</span>: <b>{mode}</b></div>
+    <div><span class="mono">Last update</span>: <b>{now_utc}</b></div>
+    <div><span class="mono">Alerts</span>: <b>{"ON" if enable_alerts else "OFF"}</b></div>
+    <div><span class="mono">Cooldown</span>: <b>{cooldown_minutes}m</b></div>
+  </div>
+</div>
+""",
+    unsafe_allow_html=True,
+)
 
+st.write("")
+
+
+# ==============================
+# DECISION + CONTEXT ROW
+# ==============================
 status_text = "ALLOWED ✅" if allow else "BLOCKED ⛔"
 
-col1.metric("Status", status_text)
-col2.metric("Recommended Exposure", f"{exposure:.2f}")
-col3.metric("MA Signal", f"{ma_long:.0f}")
-col4.metric("Mode", mode)
-col5.metric("Last update", now_utc)
-
-if mode != "ma_only":
-    st.caption(f"Gate: Trend confidence ≥ {trend_thr} AND Neutral confidence < {neutral_thr}")
-
-# ==============================
-# WHAT SHOULD I DO?
-# ==============================
 if allow and ma_long == 1.0:
-    guidance = "✅ Conditions favourable and MA is long — long exposure is permitted."
+    guidance = "Conditions favourable and MA is long — long exposure is permitted."
 elif allow and ma_long == 0.0:
-    guidance = "ℹ️ Conditions favourable, but MA is not long — no long exposure right now."
+    guidance = "Conditions favourable, but MA is not long — no long exposure right now."
 else:
-    guidance = "⛔ Conditions unfavourable — stand aside (no exposure)."
+    guidance = "Conditions unfavourable — stand aside (no exposure)."
 
-st.success(f"**What should I do?** {guidance}")
-
-# ==============================
-# MARKET CONTEXT
-# ==============================
 if p_trend >= 0.55:
     context = "Trend conditions detected — directional moves are more likely."
 elif p_neutral >= 0.50:
@@ -332,86 +390,156 @@ elif p_neutral >= 0.50:
 else:
     context = "Transitional or unstable market — conditions are uncertain."
 
-st.info(f"**Market context:** {context}")
+c1, c2 = st.columns([1.2, 1.0], gap="large")
+
+with c1:
+    st.markdown(
+        f"""
+<div class="card">
+  <div class="card-title">Decision</div>
+  <div style="display:flex; justify-content:space-between; gap:16px; flex-wrap:wrap;">
+    <div>
+      <div style="opacity:0.75;">Status</div>
+      <div class="big">{status_text}</div>
+    </div>
+    <div>
+      <div style="opacity:0.75;">Recommended Exposure</div>
+      <div class="big mono">{exposure:.2f}</div>
+    </div>
+    <div>
+      <div style="opacity:0.75;">MA Signal</div>
+      <div class="big mono">{ma_long:.0f}</div>
+    </div>
+  </div>
+  <div class="hr"></div>
+  <div><b>What should I do?</b> {guidance}</div>
+  <div style="margin-top:10px; opacity:0.80;">
+    <span class="mono">Trend</span>: <b>{p_trend:.2f}</b> &nbsp;•&nbsp;
+    <span class="mono">Neutral</span>: <b>{p_neutral:.2f}</b>
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+with c2:
+    gate_line = "MA-only mode (no AI gate)."
+    if mode != "ma_only":
+        gate_line = f"Gate: Trend ≥ {trend_thr:.2f} AND Neutral < {neutral_thr:.2f}"
+    st.markdown(
+        f"""
+<div class="card">
+  <div class="card-title">Market context</div>
+  <div style="opacity:0.92; font-size:1.05rem;"><b>{context}</b></div>
+  <div class="hr"></div>
+  <div style="opacity:0.85;">{gate_line}</div>
+  <div style="opacity:0.70; margin-top:10px;">
+    This tool is decision support, not financial advice.
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+st.write("")
 
 
 # ==============================
-# FEATURE SNAPSHOT
+# CHARTS ROW
 # ==============================
-st.subheader("Latest Features")
-f1, f2, f3 = st.columns(3)
-f1.metric("Trend", f"{float(latest['trend']):.5f}")
-f2.metric("Volatility", f"{float(latest['volatility']):.5f}")
-f3.metric("Return", f"{float(latest['return']):.5f}")
+ch1, ch2 = st.columns([1.35, 1.0], gap="large")
+
+with ch1:
+    st.markdown('<div class="card"><div class="card-title">Price (recent)</div>', unsafe_allow_html=True)
+
+    price_tail = df_price.tail(300).copy()
+    price_tail["Close"] = pd.to_numeric(price_tail["Close"], errors="coerce")
+    price_tail = price_tail.dropna(subset=["Close", "Date"])
+
+    price_chart = (
+        alt.Chart(price_tail)
+        .mark_line()
+        .encode(
+            x=alt.X("Date:T", title=""),
+            y=alt.Y("Close:Q", title="Price"),
+            tooltip=[alt.Tooltip("Date:T"), alt.Tooltip("Close:Q", format=".2f")],
+        )
+        .properties(height=280)
+    )
+
+    st.altair_chart(price_chart, use_container_width=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+with ch2:
+    st.markdown('<div class="card"><div class="card-title">Regime probabilities (now)</div>', unsafe_allow_html=True)
+
+    probs_df = pd.DataFrame({"Regime": classes, "Probability": probs}).sort_values("Probability", ascending=False)
+    probs_df["Regime"] = probs_df["Regime"].replace({"Unknown": "Neutral"})
+
+    bar = (
+        alt.Chart(probs_df)
+        .mark_bar()
+        .encode(
+            x=alt.X("Probability:Q", scale=alt.Scale(domain=[0, 1]), title=""),
+            y=alt.Y("Regime:N", sort="-x", title=""),
+            tooltip=[alt.Tooltip("Regime:N"), alt.Tooltip("Probability:Q", format=".3f")],
+        )
+        .properties(height=280)
+    )
+    st.altair_chart(bar, use_container_width=True)
+
+    st.markdown(
+        '<div style="opacity:0.75; margin-top:8px;">Neutral is common — it often means consolidation / low edge.</div></div>',
+        unsafe_allow_html=True,
+    )
+
+st.write("")
 
 
 # ==============================
-# REGIME CONFIDENCE (NOW)
+# RECENT PROBABILITIES + DETAILS
 # ==============================
-st.subheader("Market Regime Confidence (Neutral is common)")
-probs_df = pd.DataFrame({"Regime": classes, "Probability": probs}).sort_values("Probability", ascending=False)
-
-# Rename Unknown -> Neutral for display only
-probs_df["Regime"] = probs_df["Regime"].replace({"Unknown": "Neutral"})
-
-st.bar_chart(probs_df.set_index("Regime")["Probability"])
-st.caption("Note: **Neutral** is normal and usually means no strong trend or extreme volatility is detected.")
-
-
-# ==============================
-# RECENT CONFIDENCE
-# ==============================
-st.subheader("Market Regime Confidence (Recent)")
+st.markdown('<div class="card"><div class="card-title">Regime confidence (recent)</div>', unsafe_allow_html=True)
 
 hist_df = pd.DataFrame(st.session_state.signal_history)
 if not hist_df.empty:
     hist_df = hist_df[(hist_df["ticker"] == ticker) & (hist_df["mode"] == mode)].copy()
     hist_df["time_dt"] = pd.to_datetime(hist_df["time"], format="%Y-%m-%d %H:%M UTC", errors="coerce")
-    hist_df = hist_df.dropna(subset=["time_dt"]).sort_values("time_dt").tail(80)
+    hist_df = hist_df.dropna(subset=["time_dt"]).sort_values("time_dt").tail(120)
 
-    # Use neutral naming consistently
-    line_df = hist_df.set_index("time_dt")[["p_trend", "p_neutral"]].rename(columns={"p_neutral": "p_neutral (Neutral)"})
-    st.line_chart(line_df)
+    if not hist_df.empty:
+        long_df = hist_df.melt(
+            id_vars=["time_dt"],
+            value_vars=["p_trend", "p_neutral"],
+            var_name="metric",
+            value_name="value",
+        )
+        long_df["metric"] = long_df["metric"].replace({"p_neutral": "p_neutral (Neutral)", "p_trend": "p_trend (Trend)"})
+
+        line = (
+            alt.Chart(long_df)
+            .mark_line()
+            .encode(
+                x=alt.X("time_dt:T", title=""),
+                y=alt.Y("value:Q", scale=alt.Scale(domain=[0, 1]), title=""),
+                color=alt.Color("metric:N", title=""),
+                tooltip=[alt.Tooltip("time_dt:T"), alt.Tooltip("metric:N"), alt.Tooltip("value:Q", format=".3f")],
+            )
+            .properties(height=220)
+        )
+        st.altair_chart(line, use_container_width=True)
+    else:
+        st.info("No history yet. Leave the dashboard open for a few refreshes.")
 else:
-    st.info("No signal history yet. Leave the dashboard open for a few refreshes.")
+    st.info("No history yet. Leave the dashboard open for a few refreshes.")
 
+st.markdown("</div>", unsafe_allow_html=True)
 
-# ==============================
-# HOW TO READ THIS
-# ==============================
-st.markdown("### How to read this")
-st.markdown(
-    """
-- **Trend** — the model detects statistically strong directional movement.
-- **High Volatility** — the market is unstable; risk is elevated.
-- **Neutral** — normal conditions (most common), often consolidation.
-
-**Design note:**  
-This system is intentionally quiet. When **Trend** confidence rises and **Neutral** confidence falls,
-conditions are usually more favorable.
-"""
-)
-
-
-# ==============================
-# PRICE CHART
-# ==============================
-st.subheader(f"{ticker} Price (Recent)")
-fig, ax = plt.subplots()
-df["Close"].tail(250).plot(ax=ax)
-ax.set_ylabel("Price")
-ax.set_xlabel("Time")
-st.pyplot(fig)
-
-
-# ==============================
-# SIGNAL HISTORY TABLE
-# ==============================
-with st.expander("Recent Signals (details)"):
+with st.expander("Recent signals (details)"):
     if not hist_df.empty:
         show_df = hist_df.drop(columns=["time_dt"], errors="ignore").copy()
         if "p_neutral" in show_df.columns:
             show_df = show_df.rename(columns={"p_neutral": "p_neutral (Neutral)"})
-        st.dataframe(show_df[::-1].tail(50), use_container_width=True)
+        st.dataframe(show_df[::-1].tail(80), use_container_width=True)
     else:
         st.write("No signals yet.")
