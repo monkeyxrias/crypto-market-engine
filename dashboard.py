@@ -105,6 +105,11 @@ def _extract_close_series(raw: Any) -> pd.Series:
 
 
 def _normalize_price_df(raw: pd.DataFrame) -> pd.DataFrame:
+    """
+    Produce a clean DF with:
+      - index: datetime (UTC assumed if tz-naive)
+      - column: Close (float)
+    """
     close = _extract_close_series(raw)
     close = pd.to_numeric(close, errors="coerce")
 
@@ -130,8 +135,14 @@ def _normalize_price_df(raw: pd.DataFrame) -> pd.DataFrame:
     df_clean = df_clean.sort_index()
     df_clean["Close"] = pd.to_numeric(df_clean["Close"], errors="coerce")
     df_clean = df_clean.dropna(subset=["Close"])
+
     if df_clean.empty:
         raise ValueError("After normalization, no valid Close data remains.")
+
+    # Ensure tz-aware UTC index for freshness calculations
+    if df_clean.index.tz is None:
+        df_clean.index = df_clean.index.tz_localize("UTC")
+
     return df_clean
 
 
@@ -184,7 +195,7 @@ st.markdown(
 # ==============================
 st.sidebar.markdown("## ⚡ Market Regime Engine")
 st.sidebar.caption("Crypto-only MVP • Dark terminal UI")
-st.sidebar.caption("DASHBOARD VERSION: 2026-01-09 v5.5 (Pro Beta framing)")
+st.sidebar.caption("DASHBOARD VERSION: 2026-01-09 v5.6 (Full stable w/ freshness + Pro Beta)")
 
 # --- Plan card (Pro Beta) ---
 st.sidebar.markdown("### Plan")
@@ -257,6 +268,7 @@ with st.sidebar.expander("Advanced / Setup"):
 
     st.caption("Webhook loaded: " + ("YES ✅" if st.secrets.get("DISCORD_WEBHOOK_URL", "") else "NO ❌"))
 
+# Auto refresh
 st_autorefresh(interval=refresh_minutes * 60 * 1000, key="refresh")
 
 
@@ -289,7 +301,7 @@ if "signal_history" not in st.session_state:
 
 
 # ==============================
-# LOAD + NORMALIZE DATA
+# LOAD + NORMALIZE DATA (WITH SAFE TRY/EXCEPT)
 # ==============================
 try:
     raw = data.get_price_data(ticker)
@@ -299,7 +311,7 @@ except Exception as e:
     st.stop()
 
 try:
-    df = _normalize_price_df(raw)
+    df = _normalize_price_df(raw)  # guaranteed Close + datetime index
 except Exception as e:
     st.error(f"Data normalization failed: {e}")
     st.stop()
@@ -308,11 +320,7 @@ except Exception as e:
 # DATA FRESHNESS (Yahoo Finance)
 # ==============================
 last_candle_ts = df.index.max()
-now_ts = pd.Timestamp.utcnow()
-
-# If timestamp has no timezone, assume UTC
-if last_candle_ts.tzinfo is None:
-    last_candle_ts = last_candle_ts.tz_localize("UTC")
+now_ts = pd.Timestamp.utcnow().tz_localize("UTC")
 
 age_minutes = max(0, int((now_ts - last_candle_ts).total_seconds() // 60))
 
@@ -326,19 +334,17 @@ else:
 data_status_text = f"{freshness_label} • {age_minutes}m ago"
 last_candle_str = last_candle_ts.strftime("%Y-%m-%d %H:%M UTC")
 
-
-except Exception as e:
-    st.error(f"Data normalization failed: {e}")
-    st.stop()
-
 if len(df) < 120:
     st.error("Not enough price history returned to run the engine (need ~120+ points). Try again shortly.")
     st.stop()
 
+# Compute features on normalized data
 df = features.compute_features(df)
 df = create_labels(df)
 
 df_price = df.reset_index().rename(columns={"index": "Date"})
+# For charts, make Date tz-naive or Altair may warn; keep a clean datetime
+df_price["Date"] = pd.to_datetime(df_price["Date"], errors="coerce").dt.tz_convert(None)
 
 
 # ==============================
@@ -417,6 +423,8 @@ else:
             f"Exposure: {exposure:.2f}\n"
             f"Trend confidence: {p_trend:.2f}\n"
             f"Neutral confidence: {p_neutral:.2f}\n"
+            f"Data: {data_status_text}\n"
+            f"Last candle: {last_candle_str}\n"
             f"Time: {now_utc}"
         )
 
@@ -723,5 +731,4 @@ with st.expander("Recent signals (details)"):
         st.dataframe(show_df[::-1].tail(80), use_container_width=True)
     else:
         st.write("No signals yet.")
-
 
