@@ -291,9 +291,37 @@ if "signal_history" not in st.session_state:
 # ==============================
 # LOAD + NORMALIZE DATA
 # ==============================
-raw = data.get_price_data(ticker)
+try:
+    raw = data.get_price_data(ticker)
+except Exception as e:
+    st.error(f"Data fetch failed (yfinance): {e}")
+    st.caption("Try again in a minute — Yahoo sometimes rate-limits or delays data.")
+    st.stop()
+
 try:
     df = _normalize_price_df(raw)  # guaranteed Close
+    # ==============================
+# DATA FRESHNESS (Yahoo Finance)
+# ==============================
+last_candle_ts = df.index.max()
+now_ts = pd.Timestamp.utcnow()
+
+# If timestamp has no timezone, assume UTC
+if last_candle_ts.tzinfo is None:
+    last_candle_ts = last_candle_ts.tz_localize("UTC")
+
+age_minutes = max(0, int((now_ts - last_candle_ts).total_seconds() // 60))
+
+if age_minutes <= 10:
+    freshness_label = "Fresh"
+elif age_minutes <= 60:
+    freshness_label = "Delayed"
+else:
+    freshness_label = "Stale"
+
+data_status_text = f"{freshness_label} • {age_minutes}m ago"
+last_candle_str = last_candle_ts.strftime("%Y-%m-%d %H:%M UTC")
+
 except Exception as e:
     st.error(f"Data normalization failed: {e}")
     st.stop()
@@ -437,6 +465,8 @@ st.markdown(
   <div style="display:flex; gap:16px; flex-wrap:wrap; opacity:0.85;">
     <div><span class="mono">Plan</span>: <b>Pro (Beta)</b></div>
     <div><span class="mono">Mode</span>: <b>{mode}</b></div>
+    <div><span class="mono">Data</span>: <b>{data_status_text}</b></div>
+    <div><span class="mono">Last candle</span>: <b>{last_candle_str}</b></div>
     <div><span class="mono">Last update</span>: <b>{now_utc}</b></div>
     <div><span class="mono">Alerts</span>: <b>{"ON" if enable_alerts else "OFF"}</b></div>
     <div><span class="mono">Cooldown</span>: <b>{cooldown_minutes}m</b></div>
