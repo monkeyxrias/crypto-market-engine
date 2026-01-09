@@ -54,15 +54,9 @@ def _mark_sent(state: Dict[str, Any], key: str) -> None:
 
 
 # ==============================
-# DATA NORMALIZATION (THE IMPORTANT FIX)
+# DATA NORMALIZATION (ROBUST CLOSE HANDLING)
 # ==============================
 def _extract_close_series(raw: Any) -> pd.Series:
-    """
-    Return a 1-D Close series from a raw DataFrame, handling:
-    - single columns
-    - MultiIndex columns (e.g., yfinance)
-    - df['Close'] returning a DataFrame
-    """
     if raw is None:
         raise ValueError("Price data is None.")
     if not isinstance(raw, pd.DataFrame):
@@ -78,9 +72,8 @@ def _extract_close_series(raw: Any) -> pd.Series:
         if isinstance(obj, pd.DataFrame) and obj.shape[1] >= 1:
             return obj.iloc[:, 0]
 
-    # MultiIndex columns (common)
+    # MultiIndex columns (yfinance-like)
     if isinstance(raw.columns, pd.MultiIndex):
-        # Try selecting level-0 name Close
         try:
             close_df = raw.xs("Close", axis=1, level=0, drop_level=False)
             if isinstance(close_df, pd.DataFrame) and close_df.shape[1] >= 1:
@@ -88,14 +81,13 @@ def _extract_close_series(raw: Any) -> pd.Series:
         except Exception:
             pass
 
-        # Fallback: search tuple columns containing "close"
         for col in raw.columns:
             if isinstance(col, tuple) and any(str(x).lower() == "close" for x in col):
                 s = raw[col]
                 if isinstance(s, pd.Series):
                     return s
 
-    # Fallback: fuzzy search
+    # Fuzzy search
     for c in raw.columns:
         if "close" in str(c).lower():
             obj = raw[c]
@@ -108,15 +100,9 @@ def _extract_close_series(raw: Any) -> pd.Series:
 
 
 def _normalize_price_df(raw: pd.DataFrame) -> pd.DataFrame:
-    """
-    Produce a clean DF with:
-      - index: datetime if possible
-      - column: Close (float)
-    """
     close = _extract_close_series(raw)
     close = pd.to_numeric(close, errors="coerce")
 
-    # Determine datetime index
     idx = None
     if isinstance(raw.index, pd.DatetimeIndex):
         idx = raw.index
@@ -124,19 +110,15 @@ def _normalize_price_df(raw: pd.DataFrame) -> pd.DataFrame:
         dt = pd.to_datetime(raw["Date"], errors="coerce")
         if dt.notna().any():
             idx = dt
-    else:
-        # If close already has datetime-like index, use it
-        if isinstance(close.index, pd.DatetimeIndex):
-            idx = close.index
+    elif isinstance(close.index, pd.DatetimeIndex):
+        idx = close.index
 
     df_clean = pd.DataFrame({"Close": close.values})
 
-    # Apply index
     if idx is not None and len(idx) == len(df_clean):
         df_clean.index = pd.to_datetime(idx, errors="coerce")
-        df_clean = df_clean.dropna(axis=0, how="any")  # drop rows where index or close bad
+        df_clean = df_clean.dropna(axis=0, how="any")
     else:
-        # fallback to synthetic time axis
         df_clean = df_clean.dropna(subset=["Close"])
         df_clean.index = pd.date_range(end=pd.Timestamp.utcnow(), periods=len(df_clean), freq="H")
 
@@ -148,6 +130,12 @@ def _normalize_price_df(raw: pd.DataFrame) -> pd.DataFrame:
     return df_clean
 
 
+def _fmt(x: float, nd: int = 5) -> str:
+    if x is None or (isinstance(x, float) and np.isnan(x)):
+        return "—"
+    return f"{x:.{nd}f}"
+
+
 # ==============================
 # PAGE SETUP
 # ==============================
@@ -157,6 +145,7 @@ st.markdown(
     """
 <style>
 .block-container { padding-top: 1.2rem; padding-bottom: 2.0rem; }
+
 .card {
   border: 1px solid rgba(255,255,255,0.08);
   background: rgba(255,255,255,0.03);
@@ -164,6 +153,7 @@ st.markdown(
   padding: 16px 16px;
   box-shadow: 0 10px 30px rgba(0,0,0,0.25);
 }
+
 .card-title {
   font-size: 0.9rem;
   letter-spacing: 0.08em;
@@ -171,10 +161,13 @@ st.markdown(
   text-transform: uppercase;
   margin-bottom: 8px;
 }
+
 .big { font-size: 1.35rem; font-weight: 700; }
+
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
+
 .hr { height: 1px; background: rgba(255,255,255,0.08); margin: 14px 0; }
 </style>
 """,
@@ -186,7 +179,7 @@ st.markdown(
 # ==============================
 st.sidebar.markdown("## ⚡ Market Regime Engine")
 st.sidebar.caption("Crypto-only MVP • Dark terminal UI")
-st.sidebar.caption("DASHBOARD VERSION: 2026-01-09 v5.3 (Normalization fix)")
+st.sidebar.caption("DASHBOARD VERSION: 2026-01-09 v5.4 (UI polish pass)")
 
 st.sidebar.markdown("### Market")
 _ = st.sidebar.selectbox("Universe", ["Crypto"], index=0, disabled=True)
@@ -225,10 +218,7 @@ with st.sidebar.expander("Advanced / Setup"):
         if not webhook:
             st.session_state.discord_test_status = ("fail", "DISCORD_WEBHOOK_URL secret is missing/empty.")
         else:
-            ok, msg = send_discord_alert(
-                webhook_url=webhook,
-                content="✅ Test: Discord alerts are working! (Market Regime Engine)"
-            )
+            ok, msg = send_discord_alert(webhook_url=webhook, content="✅ Test: Discord alerts are working! (Market Regime Engine)")
             st.session_state.discord_test_status = ("ok", msg) if ok else ("fail", msg)
 
     status = st.session_state.discord_test_status
@@ -275,26 +265,22 @@ if "signal_history" not in st.session_state:
 
 
 # ==============================
-# LOAD + NORMALIZE DATA (THIS PREVENTS ALL CLOSE ERRORS)
+# LOAD + NORMALIZE DATA
 # ==============================
 raw = data.get_price_data(ticker)
-
 try:
-    df = _normalize_price_df(raw)  # <-- guaranteed Close column
+    df = _normalize_price_df(raw)  # guaranteed Close
 except Exception as e:
     st.error(f"Data normalization failed: {e}")
     st.stop()
 
-# Need enough history for MAs and features
 if len(df) < 120:
     st.error("Not enough price history returned to run the engine (need ~120+ points). Try again shortly.")
     st.stop()
 
-# Compute features on a clean base
 df = features.compute_features(df)
 df = create_labels(df)
 
-# Chart frame
 df_price = df.reset_index().rename(columns={"index": "Date"})
 
 
@@ -313,7 +299,9 @@ if df_ma.empty:
     st.error(f"Not enough data to compute MAs (need {slow}+ valid points).")
     st.stop()
 
-ma_long = float(df_ma["ma_fast"].iloc[-1] > df_ma["ma_slow"].iloc[-1])
+ma_fast_val = float(df_ma["ma_fast"].iloc[-1])
+ma_slow_val = float(df_ma["ma_slow"].iloc[-1])
+ma_long = float(ma_fast_val > ma_slow_val)
 
 
 # ==============================
@@ -385,6 +373,29 @@ else:
     alert_state[alert_key_state] = current_state
     _save_alert_state(alert_state)
 
+# Last alert sent indicator
+last_sent_ts = int(alert_state.get(alert_key_sent, 0) or 0)
+last_alert_utc = "—"
+if last_sent_ts > 0:
+    last_alert_utc = datetime.utcfromtimestamp(last_sent_ts).strftime("%Y-%m-%d %H:%M UTC")
+
+
+# ==============================
+# RECORD SIGNAL (FOR RECENT CHART / TABLE)
+# ==============================
+signal = {
+    "time": now_utc,
+    "ticker": ticker,
+    "mode": mode,
+    "ma_signal": int(ma_long),
+    "p_trend": round(p_trend, 3),
+    "p_neutral": round(p_neutral, 3),
+    "allowed": bool(allow),
+    "exposure": round(float(exposure), 2),
+}
+st.session_state.signal_history.append(signal)
+st.session_state.signal_history = st.session_state.signal_history[-300:]
+
 
 # ==============================
 # UI (PRO)
@@ -404,6 +415,7 @@ st.markdown(
     <div><span class="mono">Last update</span>: <b>{now_utc}</b></div>
     <div><span class="mono">Alerts</span>: <b>{"ON" if enable_alerts else "OFF"}</b></div>
     <div><span class="mono">Cooldown</span>: <b>{cooldown_minutes}m</b></div>
+    <div><span class="mono">Last alert</span>: <b>{last_alert_utc}</b></div>
   </div>
 </div>
 """,
@@ -471,7 +483,7 @@ with c2:
   <div class="hr"></div>
   <div style="opacity:0.85;">{gate_line}</div>
   <div style="opacity:0.70; margin-top:10px;">
-    This tool is decision support, not financial advice.
+    Decision support only • Not financial advice.
   </div>
 </div>
 """,
@@ -479,22 +491,15 @@ with c2:
     )
 
 st.write("")
-st.write("")
 
-m1, m2, m3, m4 = st.columns([1, 1, 1, 1], gap="large")
-
-# Safely read feature values (in case provider hiccups)
+# ==============================
+# LATEST METRICS ROW (RETURN / VOL / TREND / MA)
+# ==============================
 latest_return = float(latest.get("return", np.nan))
 latest_vol = float(latest.get("volatility", np.nan))
 latest_trend = float(latest.get("trend", np.nan))
 
-ma_fast_val = float(df_ma["ma_fast"].iloc[-1])
-ma_slow_val = float(df_ma["ma_slow"].iloc[-1])
-
-def _fmt(x, nd=5):
-    if x is None or (isinstance(x, float) and np.isnan(x)):
-        return "—"
-    return f"{x:.{nd}f}"
+m1, m2, m3, m4 = st.columns([1, 1, 1, 1], gap="large")
 
 with m1:
     st.markdown(
@@ -547,6 +552,11 @@ with m4:
         unsafe_allow_html=True,
     )
 
+st.write("")
+
+# ==============================
+# CHARTS ROW
+# ==============================
 ch1, ch2 = st.columns([1.35, 1.0], gap="large")
 
 with ch1:
@@ -583,3 +593,86 @@ with ch2:
     )
     st.altair_chart(bar, use_container_width=True)
     st.markdown('<div style="opacity:0.75; margin-top:8px;">Neutral is common — often consolidation / low edge.</div></div>', unsafe_allow_html=True)
+
+st.write("")
+
+# ==============================
+# HOW IT WORKS CARD
+# ==============================
+st.markdown(
+    """
+<div class="card">
+  <div class="card-title">How it works</div>
+  <div style="opacity:0.92; line-height:1.55;">
+    <b>Purpose:</b> Filter market conditions so you avoid trading low-edge regimes.<br/>
+    <b>ENTRY alert:</b> The AI gate opens (conditions become favourable).<br/>
+    <b>EXIT alert:</b> The AI gate closes (conditions deteriorate).<br/>
+    <b>Neutral is common:</b> Often consolidation — low edge is normal.<br/>
+    <div class="hr"></div>
+    <span style="opacity:0.75;">Decision support only • Not financial advice.</span>
+  </div>
+</div>
+""",
+    unsafe_allow_html=True,
+)
+
+st.write("")
+
+# ==============================
+# RECENT CONFIDENCE (LINE CHART) + DETAILS TABLE
+# ==============================
+hist_df = pd.DataFrame(st.session_state.signal_history)
+hist_df = hist_df[(hist_df["ticker"] == ticker) & (hist_df["mode"] == mode)].copy() if not hist_df.empty else hist_df
+
+if not hist_df.empty:
+    hist_df["time_dt"] = pd.to_datetime(hist_df["time"], format="%Y-%m-%d %H:%M UTC", errors="coerce")
+    hist_df = hist_df.dropna(subset=["time_dt"]).sort_values("time_dt").tail(160)
+
+    if not hist_df.empty:
+        st.markdown('<div class="card"><div class="card-title">Regime confidence (recent)</div>', unsafe_allow_html=True)
+
+        long_df = hist_df.melt(
+            id_vars=["time_dt"],
+            value_vars=["p_trend", "p_neutral"],
+            var_name="metric",
+            value_name="value",
+        )
+        long_df["metric"] = long_df["metric"].replace(
+            {"p_neutral": "Neutral", "p_trend": "Trend"}
+        )
+
+        line = (
+            alt.Chart(long_df)
+            .mark_line()
+            .encode(
+                x=alt.X("time_dt:T", title=""),
+                y=alt.Y("value:Q", scale=alt.Scale(domain=[0, 1]), title=""),
+                color=alt.Color("metric:N", title=""),
+                tooltip=[alt.Tooltip("time_dt:T"), alt.Tooltip("metric:N"), alt.Tooltip("value:Q", format=".3f")],
+            )
+            .properties(height=220)
+        )
+        st.altair_chart(line, use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+with st.expander("Recent signals (details)"):
+    if not hist_df.empty:
+        show_df = hist_df.drop(columns=["time_dt"], errors="ignore").copy()
+
+        # Clean column names for users
+        rename_map = {
+            "p_trend": "Trend",
+            "p_neutral": "Neutral",
+            "ma_signal": "MA",
+            "allowed": "Allowed",
+            "exposure": "Exposure",
+            "ticker": "Asset",
+            "mode": "Mode",
+            "time": "Time",
+        }
+        show_df = show_df.rename(columns={k: v for k, v in rename_map.items() if k in show_df.columns})
+
+        st.dataframe(show_df[::-1].tail(80), use_container_width=True)
+    else:
+        st.write("No signals yet.")
+
