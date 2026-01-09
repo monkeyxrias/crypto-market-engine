@@ -320,7 +320,8 @@ except Exception as e:
 # DATA FRESHNESS (Yahoo Finance)
 # ==============================
 last_candle_ts = df.index.max()
-now_ts = pd.Timestamp.utcnow().tz_localize("UTC")
+now_ts = pd.Timestamp.utcnow()
+
 
 age_minutes = max(0, int((now_ts - last_candle_ts).total_seconds() // 60))
 
