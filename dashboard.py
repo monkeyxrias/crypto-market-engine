@@ -52,6 +52,8 @@ refresh_minutes = st.sidebar.slider(
 )
 
 enable_alerts = st.sidebar.toggle("Discord alerts", value=False)
+if st.sidebar.button("🔥 Send test Discord alert"):
+    send_discord_alert("🔥 TEST: Discord alerts are working!")
 
 # Auto refresh
 st_autorefresh(interval=refresh_minutes * 60 * 1000, key="refresh")
