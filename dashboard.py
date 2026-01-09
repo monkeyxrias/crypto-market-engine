@@ -66,10 +66,8 @@ st.set_page_config(
 st.markdown(
     """
 <style>
-/* tighten default padding a bit */
 .block-container { padding-top: 1.2rem; padding-bottom: 2.0rem; }
 
-/* cards */
 .card {
   border: 1px solid rgba(255,255,255,0.08);
   background: rgba(255,255,255,0.03);
@@ -95,14 +93,12 @@ st.markdown(
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
 
-/* subtle divider */
 .hr {
   height: 1px;
   background: rgba(255,255,255,0.08);
   margin: 14px 0;
 }
 
-/* reduce top whitespace in sidebar headings */
 section[data-testid="stSidebar"] .stMarkdown h2 { margin-top: 0.2rem; }
 </style>
 """,
@@ -114,10 +110,10 @@ section[data-testid="stSidebar"] .stMarkdown h2 { margin-top: 0.2rem; }
 # ==============================
 st.sidebar.markdown("## ⚡ Market Regime Engine")
 st.sidebar.caption("Crypto-only MVP • Dark terminal UI")
-st.sidebar.caption("DASHBOARD VERSION: 2026-01-09 v5 (Dark + Pro layout)")
+st.sidebar.caption("DASHBOARD VERSION: 2026-01-09 v5.1 (MA guard fix)")
 
 st.sidebar.markdown("### Market")
-market = st.sidebar.selectbox("Universe", ["Crypto"], index=0, disabled=True)
+_ = st.sidebar.selectbox("Universe", ["Crypto"], index=0, disabled=True)
 
 SUPPORTED_ASSETS = {
     "BTC-USD": "Bitcoin (BTC)",
@@ -219,30 +215,44 @@ df = data.get_price_data(ticker)
 df = features.compute_features(df)
 df = create_labels(df)
 
-# Price series (ensure datetime index if available)
+# Make sure Close exists and is numeric
+if "Close" not in df.columns:
+    st.error("Data source did not return a 'Close' column. Check data.get_price_data().")
+    st.stop()
+
+df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
+
+# Price series (ensure datetime axis)
 df_price = df.copy()
 if "Date" in df_price.columns:
     df_price["Date"] = pd.to_datetime(df_price["Date"], errors="coerce")
     df_price = df_price.dropna(subset=["Date"]).sort_values("Date")
 elif isinstance(df_price.index, pd.DatetimeIndex):
-    df_price = df_price.sort_index()
-    df_price = df_price.reset_index().rename(columns={"index": "Date"})
+    df_price = df_price.sort_index().reset_index().rename(columns={"index": "Date"})
 else:
-    # fallback: create a pseudo time axis
     df_price = df_price.reset_index(drop=True)
     df_price["Date"] = pd.date_range(end=pd.Timestamp.utcnow(), periods=len(df_price), freq="H")
 
 
 # ==============================
-# MOVING AVERAGE SIGNAL
+# MOVING AVERAGE SIGNAL (GUARDED)
 # ==============================
 fast = 24
 slow = 72
 
 df_ma = df.copy()
-df_ma["ma_fast"] = df_ma["Close"].rolling(fast).mean()
-df_ma["ma_slow"] = df_ma["Close"].rolling(slow).mean()
-df_ma = df_ma.dropna()
+df_ma["Close"] = pd.to_numeric(df_ma["Close"], errors="coerce")
+
+df_ma["ma_fast"] = df_ma["Close"].rolling(fast, min_periods=fast).mean()
+df_ma["ma_slow"] = df_ma["Close"].rolling(slow, min_periods=slow).mean()
+df_ma = df_ma.dropna(subset=["ma_fast", "ma_slow"])
+
+if df_ma.empty:
+    st.error(
+        f"Not enough valid data to compute moving averages (need at least {slow} valid points). "
+        "Try again shortly or ensure the data source returns sufficient history."
+    )
+    st.stop()
 
 ma_long = float(df_ma["ma_fast"].iloc[-1] > df_ma["ma_slow"].iloc[-1])
 
@@ -263,7 +273,7 @@ classes = clf.classes_
 prob = dict(zip(classes, probs))
 
 p_trend = float(prob.get("Trend", 0.0))
-p_neutral = float(prob.get("Unknown", 0.0))  # internal label is Unknown; user-facing is Neutral
+p_neutral = float(prob.get("Unknown", 0.0))  # internal label Unknown; user-facing Neutral
 
 
 # ==============================
@@ -466,7 +476,6 @@ with ch1:
         )
         .properties(height=280)
     )
-
     st.altair_chart(price_chart, use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -487,7 +496,6 @@ with ch2:
         .properties(height=280)
     )
     st.altair_chart(bar, use_container_width=True)
-
     st.markdown(
         '<div style="opacity:0.75; margin-top:8px;">Neutral is common — it often means consolidation / low edge.</div></div>',
         unsafe_allow_html=True,
@@ -514,7 +522,9 @@ if not hist_df.empty:
             var_name="metric",
             value_name="value",
         )
-        long_df["metric"] = long_df["metric"].replace({"p_neutral": "p_neutral (Neutral)", "p_trend": "p_trend (Trend)"})
+        long_df["metric"] = long_df["metric"].replace(
+            {"p_neutral": "p_neutral (Neutral)", "p_trend": "p_trend (Trend)"}
+        )
 
         line = (
             alt.Chart(long_df)
