@@ -122,7 +122,7 @@ if status:
         st.sidebar.error(msg)
         st.sidebar.caption("Tip: HTTP 401/403=invalid webhook, 404=wrong URL, timeout=requests/network")
 
-# Quick secret visibility indicator (helps diagnose “nothing happens”)
+# Quick secret visibility indicator
 st.sidebar.caption(
     "Webhook loaded: " + ("YES ✅" if st.secrets.get("DISCORD_WEBHOOK_URL", "") else "NO ❌")
 )
@@ -214,7 +214,14 @@ now_utc = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
 
 # ==============================
-# ALERT LOGIC (COOLDOWN + PERSISTENT STATE)
+# ALERT LOGIC (REFINED)
+# - No first-run spam
+# - Alerts only on:
+#     * ENTRY (BLOCKED -> ALLOWED)
+#     * EXIT  (ALLOWED -> BLOCKED)
+#     * EXPOSURE CHANGE (0 <-> 1)
+# - Cooldown still applies
+# - Persistent across reruns
 # ==============================
 alert_state = _load_alert_state()
 
@@ -225,34 +232,66 @@ current_state = {
     "allow": bool(allow),
     "ma_long": int(ma_long),
     "exposure": float(exposure),
+    "p_trend": float(p_trend),
+    "p_unknown": float(p_unknown),
 }
+
 previous_state = alert_state.get(alert_key_state)
 
-state_changed = (previous_state is not None and current_state != previous_state)
+if previous_state is None:
+    # First run for this ticker/mode: store but do NOT alert
+    alert_state[alert_key_state] = current_state
+    _save_alert_state(alert_state)
+else:
+    prev_allow = bool(previous_state.get("allow", False))
+    prev_exposure = float(previous_state.get("exposure", 0.0))
 
-if enable_alerts and state_changed and _should_send_with_cooldown(alert_state, alert_key_sent, cooldown_s):
-    msg = (
-        f"**Market Engine Update** ({ticker}, {mode})\n"
-        f"- Time: {now_utc}\n"
-        f"- Status: {'ALLOWED ✅' if allow else 'BLOCKED ⛔'}\n"
-        f"- Exposure: {exposure:.2f}\n"
-        f"- MA Signal: {ma_long:.0f}\n"
-        f"- p(Trend): {p_trend:.3f}\n"
-        f"- p(Unknown): {p_unknown:.3f}"
-    )
+    allow_flip = (prev_allow != bool(allow))
+    exposure_flip = (prev_exposure != float(exposure))
 
-    webhook = st.secrets.get("DISCORD_WEBHOOK_URL", "")
-    ok, info = send_discord_alert(webhook_url=webhook, content=msg)
+    entry_event = (prev_allow is False and bool(allow) is True)
+    exit_event = (prev_allow is True and bool(allow) is False)
 
-    if ok:
-        st.sidebar.success(f"Alert sent: {info}")
-        _mark_sent(alert_state, alert_key_sent)
+    # Optional: set True if you only want "ENTRY" alerts
+    alert_on_entries_only = False
+
+    if alert_on_entries_only:
+        important_change = entry_event or (prev_exposure == 0.0 and float(exposure) > 0.0)
     else:
-        st.sidebar.error(f"Alert failed: {info}")
+        important_change = allow_flip or exposure_flip
 
-# Always store current state
-alert_state[alert_key_state] = current_state
-_save_alert_state(alert_state)
+    if enable_alerts and important_change and _should_send_with_cooldown(alert_state, alert_key_sent, cooldown_s):
+        if entry_event:
+            event_label = "ENTRY ✅ (Gate opened)"
+        elif exit_event:
+            event_label = "EXIT ⛔ (Gate closed)"
+        elif exposure_flip:
+            event_label = "EXPOSURE CHANGE 🔁"
+        else:
+            event_label = "UPDATE"
+
+        msg = (
+            f"**Market Engine Alert** — {event_label}\n"
+            f"- Asset/Mode: {ticker} ({mode})\n"
+            f"- Time: {now_utc}\n"
+            f"- Status: {'ALLOWED ✅' if allow else 'BLOCKED ⛔'}\n"
+            f"- Exposure: {exposure:.2f}\n"
+            f"- MA Signal: {ma_long:.0f}\n"
+            f"- p(Trend): {p_trend:.3f}\n"
+            f"- p(Unknown): {p_unknown:.3f}"
+        )
+
+        webhook = st.secrets.get("DISCORD_WEBHOOK_URL", "")
+        ok, info = send_discord_alert(webhook_url=webhook, content=msg)
+
+        if ok:
+            _mark_sent(alert_state, alert_key_sent)
+        else:
+            st.sidebar.error(f"Alert failed: {info}")
+
+    # Always store current state
+    alert_state[alert_key_state] = current_state
+    _save_alert_state(alert_state)
 
 
 # ==============================
