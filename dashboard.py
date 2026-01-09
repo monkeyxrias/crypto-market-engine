@@ -299,8 +299,12 @@ except Exception as e:
     st.stop()
 
 try:
-    df = _normalize_price_df(raw)  # guaranteed Close
-    # ==============================
+    df = _normalize_price_df(raw)
+except Exception as e:
+    st.error(f"Data normalization failed: {e}")
+    st.stop()
+
+# ==============================
 # DATA FRESHNESS (Yahoo Finance)
 # ==============================
 last_candle_ts = df.index.max()
@@ -321,6 +325,7 @@ else:
 
 data_status_text = f"{freshness_label} • {age_minutes}m ago"
 last_candle_str = last_candle_ts.strftime("%Y-%m-%d %H:%M UTC")
+
 
 except Exception as e:
     st.error(f"Data normalization failed: {e}")
