@@ -15,10 +15,6 @@ import features
 from model import ensure_model_exists, load_model, create_labels
 from alerts import send_discord_alert
 
-# ==============================
-# PLAN (Soft-launch: Pro Beta)
-# ==============================
-PLAN = "pro_beta"  # no paywall yet
 
 # ==============================
 # PERSISTENT COOLDOWN STATE (NOT SESSION-BASED)
@@ -105,7 +101,7 @@ def _extract_close_series(raw: Any) -> pd.Series:
 
 def _normalize_price_df(raw: pd.DataFrame) -> pd.DataFrame:
     """
-    Produce a clean DF with:
+    Clean DF with:
       - index: datetime (UTC assumed if tz-naive)
       - column: Close (float)
     """
@@ -138,7 +134,6 @@ def _normalize_price_df(raw: pd.DataFrame) -> pd.DataFrame:
     if df_clean.empty:
         raise ValueError("After normalization, no valid Close data remains.")
 
-    # Ensure tz-aware UTC index for freshness calculations
     if getattr(df_clean.index, "tz", None) is None:
         df_clean.index = df_clean.index.tz_localize("UTC")
 
@@ -185,34 +180,26 @@ st.markdown(
 )
 
 # ==============================
-# SIDEBAR
+# PLAN / ACCESS CONTROL (Shared Key)
 # ==============================
-st.sidebar.markdown("## ⚡ Market Regime Engine")
-st.sidebar.caption("Crypto-only MVP • Dark terminal UI")
-st.sidebar.caption("DASHBOARD VERSION: 2026-01-14 v6.0 (Top-10 + hardened)")
+if "is_pro" not in st.session_state:
+    st.session_state.is_pro = False
 
-st.sidebar.markdown("### Plan")
-st.sidebar.markdown(
-    """
-<div class="card">
-  <div class="card-title">Plan</div>
-  <div class="big">Pro <span style="opacity:0.75;">(Beta)</span></div>
-  <div style="opacity:0.75; margin-top:8px;">
-    Top-10 assets • Alerts • Advanced modes<br/>
-    Pricing coming soon.
-  </div>
-</div>
-""",
-    unsafe_allow_html=True,
-)
+PRO_ACCESS_KEY = (st.secrets.get("PRO_ACCESS_KEY", "") or "").strip()
 
-if st.sidebar.button("Join early access / feedback", use_container_width=True):
-    st.sidebar.info("Send feedback (or ask for early access) — pricing + access will be announced soon.")
+def _plan_label() -> str:
+    return "Pro (Beta)" if st.session_state.is_pro else "Free"
 
-st.sidebar.markdown("### Market")
-_ = st.sidebar.selectbox("Universe", ["Crypto"], index=0, disabled=True)
+def _plan_badge_html() -> str:
+    if st.session_state.is_pro:
+        return '<div class="big">Pro <span style="opacity:0.75;">(Beta)</span></div>'
+    return '<div class="big">Free</div>'
 
-SUPPORTED_ASSETS = {
+
+# ==============================
+# ASSET UNIVERSE
+# ==============================
+TOP10_ASSETS = {
     "BTC-USD": "Bitcoin (BTC)",
     "ETH-USD": "Ethereum (ETH)",
     "BNB-USD": "BNB (BNB)",
@@ -225,6 +212,56 @@ SUPPORTED_ASSETS = {
     "POL28321-USD": "Polygon (POL, prev. MATIC)",
 }
 
+FREE_ASSETS = {
+    "BTC-USD": "Bitcoin (BTC)",
+}
+
+SUPPORTED_ASSETS = TOP10_ASSETS if st.session_state.is_pro else FREE_ASSETS
+
+
+# ==============================
+# SIDEBAR
+# ==============================
+st.sidebar.markdown("## ⚡ Market Regime Engine")
+st.sidebar.caption("Crypto-only • Dark terminal UI")
+st.sidebar.caption("DASHBOARD VERSION: 2026-01-14 v6.1 (Free/Pro gate)")
+
+st.sidebar.markdown("### Plan")
+st.sidebar.markdown(
+    f"""
+<div class="card">
+  <div class="card-title">Plan</div>
+  {_plan_badge_html()}
+  <div style="opacity:0.75; margin-top:8px;">
+    {"Top-10 assets • Alerts • Advanced modes" if st.session_state.is_pro else "BTC only • Balanced mode • No alerts"}
+  </div>
+  <div style="opacity:0.70; margin-top:10px;">
+    {"Pricing coming soon." if st.session_state.is_pro else "Upgrade to unlock more assets + alerts."}
+  </div>
+</div>
+""",
+    unsafe_allow_html=True,
+)
+
+# Unlock Pro (shared key)
+with st.sidebar.expander("Unlock Pro"):
+    entered_key = st.text_input("Pro access key", type="password", placeholder="Enter key…")
+    if st.button("Unlock", use_container_width=True):
+        if not PRO_ACCESS_KEY:
+            st.error("PRO_ACCESS_KEY not set in Streamlit Secrets.")
+        elif entered_key.strip() == PRO_ACCESS_KEY:
+            st.session_state.is_pro = True
+            st.success("Pro unlocked for this session.")
+            st.rerun()
+        else:
+            st.error("Invalid key.")
+
+if st.sidebar.button("Join early access / feedback", use_container_width=True):
+    st.sidebar.info("Send feedback — pricing + access will be announced soon.")
+
+st.sidebar.markdown("### Market")
+_ = st.sidebar.selectbox("Universe", ["Crypto"], index=0, disabled=True)
+
 st.sidebar.markdown("### Asset")
 ticker = st.sidebar.selectbox(
     "Select asset",
@@ -232,14 +269,24 @@ ticker = st.sidebar.selectbox(
     format_func=lambda k: SUPPORTED_ASSETS.get(k, k),
     index=0,
 )
-st.sidebar.caption("Supported assets (Beta): Top 10 majors")
+st.sidebar.caption("Supported assets: Top 10 majors" if st.session_state.is_pro else "Supported assets: BTC only")
 
 st.sidebar.markdown("### Strategy")
-mode = st.sidebar.selectbox("Risk profile", ["balanced", "conservative", "ma_only"], index=0)
+if st.session_state.is_pro:
+    mode = st.sidebar.selectbox("Risk profile", ["balanced", "conservative", "ma_only"], index=0)
+else:
+    mode = "balanced"
+    st.sidebar.selectbox("Risk profile", ["balanced"], index=0, disabled=True)
+
 refresh_minutes = st.sidebar.slider("Auto-refresh (minutes)", 1, 30, 5)
 
 st.sidebar.markdown("### Alerts")
-enable_alerts = st.sidebar.toggle("Enable Discord alerts", value=False)
+if st.session_state.is_pro:
+    enable_alerts = st.sidebar.toggle("Enable Discord alerts", value=False)
+else:
+    enable_alerts = False
+    st.sidebar.toggle("Enable Discord alerts", value=False, disabled=True)
+
 cooldown_minutes = st.sidebar.slider("Alert cooldown (minutes)", 1, 120, 15)
 cooldown_s = int(cooldown_minutes) * 60
 
@@ -247,31 +294,33 @@ if "discord_test_status" not in st.session_state:
     st.session_state.discord_test_status = None
 
 with st.sidebar.expander("Advanced / Setup"):
-    if st.button("Send test Discord alert", use_container_width=True, key="discord_test_btn"):
-        st.session_state.discord_test_status = ("pending", "Sending test alert...")
-        webhook = st.secrets.get("DISCORD_WEBHOOK_URL", "")
-        if not webhook:
-            st.session_state.discord_test_status = ("fail", "DISCORD_WEBHOOK_URL secret is missing/empty.")
-        else:
-            ok, msg = send_discord_alert(
-                webhook_url=webhook,
-                content="✅ Test: Discord alerts are working! (Market Regime Engine)"
-            )
-            st.session_state.discord_test_status = ("ok", msg) if ok else ("fail", msg)
+    if st.session_state.is_pro:
+        if st.button("Send test Discord alert", use_container_width=True, key="discord_test_btn"):
+            st.session_state.discord_test_status = ("pending", "Sending test alert...")
+            webhook = st.secrets.get("DISCORD_WEBHOOK_URL", "")
+            if not webhook:
+                st.session_state.discord_test_status = ("fail", "DISCORD_WEBHOOK_URL secret is missing/empty.")
+            else:
+                ok, msg = send_discord_alert(
+                    webhook_url=webhook,
+                    content="✅ Test: Discord alerts are working! (Market Regime Engine)"
+                )
+                st.session_state.discord_test_status = ("ok", msg) if ok else ("fail", msg)
 
-    status = st.session_state.discord_test_status
-    if status:
-        kind, msg = status
-        if kind == "pending":
-            st.info(msg)
-        elif kind == "ok":
-            st.success(msg)
-        else:
-            st.error(msg)
+        status = st.session_state.discord_test_status
+        if status:
+            kind, msg = status
+            if kind == "pending":
+                st.info(msg)
+            elif kind == "ok":
+                st.success(msg)
+            else:
+                st.error(msg)
 
-    st.caption("Webhook loaded: " + ("YES ✅" if st.secrets.get("DISCORD_WEBHOOK_URL", "") else "NO ❌"))
+        st.caption("Webhook loaded: " + ("YES ✅" if st.secrets.get("DISCORD_WEBHOOK_URL", "") else "NO ❌"))
+    else:
+        st.info("Advanced tools are available in Pro.")
 
-# Auto refresh
 st_autorefresh(interval=refresh_minutes * 60 * 1000, key="refresh")
 
 
@@ -304,7 +353,7 @@ if "signal_history" not in st.session_state:
 
 
 # ==============================
-# LOAD + NORMALIZE DATA (HARDENED: NO RED SCREEN ON EMPTY DATA)
+# LOAD + NORMALIZE DATA (HARDENED: BTC FALLBACK)
 # ==============================
 def _fetch_and_normalize(t: str) -> pd.DataFrame:
     raw_local = data.get_price_data(t)
@@ -314,21 +363,19 @@ def _fetch_and_normalize(t: str) -> pd.DataFrame:
 try:
     df = _fetch_and_normalize(ticker)
 except Exception:
-    # Non-fatal: fallback to BTC if Yahoo returns empty or weird format
     st.warning(
-        f"⚠️ Data unavailable for {SUPPORTED_ASSETS.get(ticker, ticker)} right now. "
-        "Falling back to Bitcoin."
+        f"⚠️ Data unavailable for {SUPPORTED_ASSETS.get(ticker, ticker)} right now. Falling back to Bitcoin."
     )
     ticker = "BTC-USD"
     df = _fetch_and_normalize(ticker)
 
 # ==============================
-# DATA FRESHNESS (Yahoo Finance)
+# DATA FRESHNESS
 # ==============================
 last_candle_ts = df.index.max()
-now_ts = pd.Timestamp.now(tz="UTC")  # safe across pandas versions
-
+now_ts = pd.Timestamp.now(tz="UTC")
 age_minutes = max(0, int((now_ts - last_candle_ts).total_seconds() // 60))
+
 if age_minutes <= 10:
     freshness_label = "Fresh"
 elif age_minutes <= 60:
@@ -343,7 +390,7 @@ if len(df) < 120:
     st.error("Not enough price history returned to run the engine (need ~120+ points). Try again shortly.")
     st.stop()
 
-# Compute features on normalized data
+# Compute features
 df = features.compute_features(df)
 df = create_labels(df)
 
@@ -363,7 +410,7 @@ except TypeError:
 
 
 # ==============================
-# MOVING AVERAGE SIGNAL (GUARDED)
+# MOVING AVERAGE SIGNAL
 # ==============================
 fast = 24
 slow = 72
@@ -411,7 +458,7 @@ now_utc = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
 
 # ==============================
-# ALERTS (ENTRY/EXIT ONLY)
+# ALERTS (ENTRY/EXIT ONLY) — PRO ONLY
 # ==============================
 alert_state = _load_alert_state()
 alert_key_state = f"state::{ticker}::{mode}"
@@ -424,36 +471,36 @@ if previous_state is None:
     alert_state[alert_key_state] = current_state
     _save_alert_state(alert_state)
 else:
-    prev_allow = bool(previous_state.get("allow", False))
-    entry_event = (prev_allow is False and bool(allow) is True)
-    exit_event = (prev_allow is True and bool(allow) is False)
+    if st.session_state.is_pro and enable_alerts:
+        prev_allow = bool(previous_state.get("allow", False))
+        entry_event = (prev_allow is False and bool(allow) is True)
+        exit_event = (prev_allow is True and bool(allow) is False)
 
-    if enable_alerts and (entry_event or exit_event) and _should_send_with_cooldown(alert_state, alert_key_sent, cooldown_s):
-        headline = "🟢 ENTRY" if entry_event else "🔴 EXIT"
-        action_line = "Trading conditions have turned favourable." if entry_event else "Trading conditions have deteriorated."
+        if (entry_event or exit_event) and _should_send_with_cooldown(alert_state, alert_key_sent, cooldown_s):
+            headline = "🟢 ENTRY" if entry_event else "🔴 EXIT"
+            action_line = "Trading conditions have turned favourable." if entry_event else "Trading conditions have deteriorated."
 
-        msg = (
-            f"{headline} — {ticker} ({mode})\n"
-            f"{action_line}\n\n"
-            f"Exposure: {exposure:.2f}\n"
-            f"Trend confidence: {p_trend:.2f}\n"
-            f"Neutral confidence: {p_neutral:.2f}\n"
-            f"Data: {data_status_text}\n"
-            f"Last candle: {last_candle_str}\n"
-            f"Time: {now_utc}"
-        )
+            msg = (
+                f"{headline} — {ticker} ({mode})\n"
+                f"{action_line}\n\n"
+                f"Exposure: {exposure:.2f}\n"
+                f"Trend confidence: {p_trend:.2f}\n"
+                f"Neutral confidence: {p_neutral:.2f}\n"
+                f"Data: {data_status_text}\n"
+                f"Last candle: {last_candle_str}\n"
+                f"Time: {now_utc}"
+            )
 
-        webhook = st.secrets.get("DISCORD_WEBHOOK_URL", "")
-        ok, info = send_discord_alert(webhook_url=webhook, content=msg)
-        if ok:
-            _mark_sent(alert_state, alert_key_sent)
-        else:
-            st.sidebar.error(f"Alert failed: {info}")
+            webhook = st.secrets.get("DISCORD_WEBHOOK_URL", "")
+            ok, info = send_discord_alert(webhook_url=webhook, content=msg)
+            if ok:
+                _mark_sent(alert_state, alert_key_sent)
+            else:
+                st.sidebar.error(f"Alert failed: {info}")
 
     alert_state[alert_key_state] = current_state
     _save_alert_state(alert_state)
 
-# Last alert sent indicator
 last_sent_ts = int(alert_state.get(alert_key_sent, 0) or 0)
 last_alert_utc = "—"
 if last_sent_ts > 0:
@@ -480,7 +527,7 @@ st.session_state.signal_history = st.session_state.signal_history[-300:]
 # ==============================
 # UI (PRO)
 # ==============================
-asset_name = SUPPORTED_ASSETS.get(ticker, ticker)
+asset_name = TOP10_ASSETS.get(ticker, ticker)
 tagline = "Market regime filter that helps you avoid trading low-edge conditions."
 
 st.markdown(
@@ -491,12 +538,12 @@ st.markdown(
   <div style="opacity:0.80; margin-top:6px;">{tagline}</div>
   <div class="hr"></div>
   <div style="display:flex; gap:16px; flex-wrap:wrap; opacity:0.85;">
-    <div><span class="mono">Plan</span>: <b>Pro (Beta)</b></div>
+    <div><span class="mono">Plan</span>: <b>{_plan_label()}</b></div>
     <div><span class="mono">Mode</span>: <b>{mode}</b></div>
     <div><span class="mono">Data</span>: <b>{data_status_text}</b></div>
     <div><span class="mono">Last candle</span>: <b>{last_candle_str}</b></div>
     <div><span class="mono">Last update</span>: <b>{now_utc}</b></div>
-    <div><span class="mono">Alerts</span>: <b>{"ON" if enable_alerts else "OFF"}</b></div>
+    <div><span class="mono">Alerts</span>: <b>{("ON" if enable_alerts else "OFF") if st.session_state.is_pro else "LOCKED"}</b></div>
     <div><span class="mono">Cooldown</span>: <b>{cooldown_minutes}m</b></div>
     <div><span class="mono">Last alert</span>: <b>{last_alert_utc}</b></div>
   </div>
@@ -555,9 +602,7 @@ with c1:
     )
 
 with c2:
-    gate_line = "MA-only mode (no AI gate)."
-    if mode != "ma_only":
-        gate_line = f"Gate: Trend ≥ {trend_thr:.2f} AND Neutral < {neutral_thr:.2f}"
+    gate_line = "MA-only mode (no AI gate)." if mode == "ma_only" else f"Gate: Trend ≥ {trend_thr:.2f} AND Neutral < {neutral_thr:.2f}"
     st.markdown(
         f"""
 <div class="card">
@@ -575,7 +620,6 @@ with c2:
 
 st.write("")
 
-# Latest metrics row
 latest_return = float(latest.get("return", np.nan))
 latest_vol = float(latest.get("volatility", np.nan))
 latest_trend = float(latest.get("trend", np.nan))
@@ -632,7 +676,6 @@ with m4:
 
 st.write("")
 
-# Charts row
 ch1, ch2 = st.columns([1.35, 1.0], gap="large")
 
 with ch1:
@@ -670,7 +713,6 @@ with ch2:
 
 st.write("")
 
-# How to use + Beta note (tight, clear)
 st.markdown(
     """
 <div class="card">
@@ -679,9 +721,9 @@ st.markdown(
     • <b>ENTRY</b> → Conditions turned favourable (green light)<br/>
     • <b>EXIT</b> → Conditions deteriorated (red light)<br/>
     • <b>Neutral</b> is common — usually consolidation / low edge<br/>
-    • Alerts are intentionally infrequent<br/>
+    • Alerts are intentionally infrequent (Pro)<br/>
     <div class="hr"></div>
-    <b>Beta note:</b> Model is trained primarily on BTC; cross-asset support is enabled during beta and will be refined per-asset.
+    <b>Beta note:</b> Model trained primarily on BTC; cross-asset support enabled during beta and will be refined per-asset.
   </div>
 </div>
 """,
@@ -691,7 +733,7 @@ st.markdown(
 st.write("")
 
 # ==============================
-# REGIME CONFIDENCE (RECENT) — FIXED + ROBUST
+# REGIME CONFIDENCE (RECENT)
 # ==============================
 hist_df = pd.DataFrame(st.session_state.signal_history)
 
@@ -700,7 +742,6 @@ if hist_df.empty:
 else:
     hist_df = hist_df[(hist_df["ticker"] == ticker) & (hist_df["mode"] == mode)].copy()
 
-    # robust parse time into datetime
     hist_df["time_dt"] = pd.to_datetime(
         hist_df["time"].astype(str).str.replace(" UTC", "", regex=False),
         errors="coerce",
