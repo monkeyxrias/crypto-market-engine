@@ -704,8 +704,15 @@ hist_df = pd.DataFrame(st.session_state.signal_history)
 hist_df = hist_df[(hist_df["ticker"] == ticker) & (hist_df["mode"] == mode)].copy() if not hist_df.empty else hist_df
 
 if not hist_df.empty:
-    hist_df["time_dt"] = pd.to_datetime(hist_df["time"], format="%Y-%m-%d %H:%M UTC", errors="coerce")
-    hist_df = hist_df.dropna(subset=["time_dt"]).sort_values("time_dt").tail(160)
+# Robust parse: works even if formatting changes slightly
+hist_df["time_dt"] = pd.to_datetime(
+    hist_df["time"].astype(str).str.replace(" UTC", "", regex=False),
+    errors="coerce",
+    utc=True
+).dt.tz_convert(None)
+if len(hist_df) < 3:
+    st.info("Regime confidence (recent) will appear after a few refreshes. Leave the dashboard open for ~2–3 cycles.")
+
 
     if not hist_df.empty:
         st.markdown('<div class="card"><div class="card-title">Regime confidence (recent)</div>', unsafe_allow_html=True)
