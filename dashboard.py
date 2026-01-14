@@ -229,7 +229,7 @@ SUPPORTED_ASSETS = {
     "AVAX-USD": "Avalanche (AVAX)",
     "DOGE-USD": "Dogecoin (DOGE)",
     "LINK-USD": "Chainlink (LINK)",
-    "MATIC-USD": "Polygon (MATIC)",
+    "POL28321-USD": "Polygon (POL, prev. MATIC)",
 }
 
 
