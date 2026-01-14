@@ -20,7 +20,6 @@ from alerts import send_discord_alert
 # ==============================
 PLAN = "pro_beta"  # no paywall yet
 
-
 # ==============================
 # PERSISTENT COOLDOWN STATE (NOT SESSION-BASED)
 # ==============================
@@ -140,7 +139,7 @@ def _normalize_price_df(raw: pd.DataFrame) -> pd.DataFrame:
         raise ValueError("After normalization, no valid Close data remains.")
 
     # Ensure tz-aware UTC index for freshness calculations
-    if df_clean.index.tz is None:
+    if getattr(df_clean.index, "tz", None) is None:
         df_clean.index = df_clean.index.tz_localize("UTC")
 
     return df_clean
@@ -161,7 +160,6 @@ st.markdown(
     """
 <style>
 .block-container { padding-top: 1.2rem; padding-bottom: 2.0rem; }
-
 .card {
   border: 1px solid rgba(255,255,255,0.08);
   background: rgba(255,255,255,0.03);
@@ -169,7 +167,6 @@ st.markdown(
   padding: 16px 16px;
   box-shadow: 0 10px 30px rgba(0,0,0,0.25);
 }
-
 .card-title {
   font-size: 0.9rem;
   letter-spacing: 0.08em;
@@ -177,13 +174,10 @@ st.markdown(
   text-transform: uppercase;
   margin-bottom: 8px;
 }
-
 .big { font-size: 1.35rem; font-weight: 700; }
-
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
-
 .hr { height: 1px; background: rgba(255,255,255,0.08); margin: 14px 0; }
 </style>
 """,
@@ -195,9 +189,8 @@ st.markdown(
 # ==============================
 st.sidebar.markdown("## ⚡ Market Regime Engine")
 st.sidebar.caption("Crypto-only MVP • Dark terminal UI")
-st.sidebar.caption("DASHBOARD VERSION: 2026-01-09 v5.6 (Full stable w/ freshness + Pro Beta)")
+st.sidebar.caption("DASHBOARD VERSION: 2026-01-14 v6.0 (Top-10 + hardened)")
 
-# --- Plan card (Pro Beta) ---
 st.sidebar.markdown("### Plan")
 st.sidebar.markdown(
     """
@@ -205,7 +198,7 @@ st.sidebar.markdown(
   <div class="card-title">Plan</div>
   <div class="big">Pro <span style="opacity:0.75;">(Beta)</span></div>
   <div style="opacity:0.75; margin-top:8px;">
-    Multi-asset • Alerts • Advanced modes<br/>
+    Top-10 assets • Alerts • Advanced modes<br/>
     Pricing coming soon.
   </div>
 </div>
@@ -232,7 +225,6 @@ SUPPORTED_ASSETS = {
     "POL28321-USD": "Polygon (POL, prev. MATIC)",
 }
 
-
 st.sidebar.markdown("### Asset")
 ticker = st.sidebar.selectbox(
     "Select asset",
@@ -241,7 +233,6 @@ ticker = st.sidebar.selectbox(
     index=0,
 )
 st.sidebar.caption("Supported assets (Beta): Top 10 majors")
-
 
 st.sidebar.markdown("### Strategy")
 mode = st.sidebar.selectbox("Risk profile", ["balanced", "conservative", "ma_only"], index=0)
@@ -262,7 +253,10 @@ with st.sidebar.expander("Advanced / Setup"):
         if not webhook:
             st.session_state.discord_test_status = ("fail", "DISCORD_WEBHOOK_URL secret is missing/empty.")
         else:
-            ok, msg = send_discord_alert(webhook_url=webhook, content="✅ Test: Discord alerts are working! (Market Regime Engine)")
+            ok, msg = send_discord_alert(
+                webhook_url=webhook,
+                content="✅ Test: Discord alerts are working! (Market Regime Engine)"
+            )
             st.session_state.discord_test_status = ("ok", msg) if ok else ("fail", msg)
 
     status = st.session_state.discord_test_status
@@ -310,30 +304,31 @@ if "signal_history" not in st.session_state:
 
 
 # ==============================
-# LOAD + NORMALIZE DATA (WITH SAFE TRY/EXCEPT)
+# LOAD + NORMALIZE DATA (HARDENED: NO RED SCREEN ON EMPTY DATA)
 # ==============================
-try:
-    raw = data.get_price_data(ticker)
-except Exception as e:
-    st.error(f"Data fetch failed (yfinance): {e}")
-    st.caption("Try again in a minute — Yahoo sometimes rate-limits or delays data.")
-    st.stop()
+def _fetch_and_normalize(t: str) -> pd.DataFrame:
+    raw_local = data.get_price_data(t)
+    return _normalize_price_df(raw_local)
+
 
 try:
-    df = _normalize_price_df(raw)  # guaranteed Close + datetime index
-except Exception as e:
-    st.error(f"Data normalization failed: {e}")
-    st.stop()
+    df = _fetch_and_normalize(ticker)
+except Exception:
+    # Non-fatal: fallback to BTC if Yahoo returns empty or weird format
+    st.warning(
+        f"⚠️ Data unavailable for {SUPPORTED_ASSETS.get(ticker, ticker)} right now. "
+        "Falling back to Bitcoin."
+    )
+    ticker = "BTC-USD"
+    df = _fetch_and_normalize(ticker)
 
 # ==============================
 # DATA FRESHNESS (Yahoo Finance)
 # ==============================
 last_candle_ts = df.index.max()
-now_ts = pd.Timestamp.utcnow()
-
+now_ts = pd.Timestamp.now(tz="UTC")  # safe across pandas versions
 
 age_minutes = max(0, int((now_ts - last_candle_ts).total_seconds() // 60))
-
 if age_minutes <= 10:
     freshness_label = "Fresh"
 elif age_minutes <= 60:
@@ -352,27 +347,19 @@ if len(df) < 120:
 df = features.compute_features(df)
 df = create_labels(df)
 
+# Chart df (robust Date column)
 df_price = df.reset_index()
-
-# Ensure we have a 'Date' column regardless of index name
 if "Date" not in df_price.columns:
-    # pandas reset_index usually creates 'index' or the index name; fall back safely
     if "index" in df_price.columns:
         df_price = df_price.rename(columns={"index": "Date"})
     else:
-        # last resort: first column produced by reset_index is the datetime index
         df_price = df_price.rename(columns={df_price.columns[0]: "Date"})
 
-# Make Date tz-naive for Altair
 df_price["Date"] = pd.to_datetime(df_price["Date"], errors="coerce")
-if hasattr(df_price["Date"].dt, "tz_convert"):
-    # Only tz_convert if tz-aware
-    try:
-        df_price["Date"] = df_price["Date"].dt.tz_convert(None)
-    except TypeError:
-        # already tz-naive
-        pass
-
+try:
+    df_price["Date"] = df_price["Date"].dt.tz_convert(None)
+except TypeError:
+    pass
 
 
 # ==============================
@@ -606,7 +593,6 @@ with m1:
 """,
         unsafe_allow_html=True,
     )
-
 with m2:
     st.markdown(
         f"""
@@ -618,7 +604,6 @@ with m2:
 """,
         unsafe_allow_html=True,
     )
-
 with m3:
     st.markdown(
         f"""
@@ -630,7 +615,6 @@ with m3:
 """,
         unsafe_allow_html=True,
     )
-
 with m4:
     st.markdown(
         f"""
@@ -654,7 +638,6 @@ ch1, ch2 = st.columns([1.35, 1.0], gap="large")
 with ch1:
     st.markdown('<div class="card"><div class="card-title">Price (recent)</div>', unsafe_allow_html=True)
     price_tail = df_price.tail(300).copy()
-
     price_chart = (
         alt.Chart(price_tail)
         .mark_line()
@@ -672,7 +655,6 @@ with ch2:
     st.markdown('<div class="card"><div class="card-title">Regime probabilities (now)</div>', unsafe_allow_html=True)
     probs_df = pd.DataFrame({"Regime": classes, "Probability": probs}).sort_values("Probability", ascending=False)
     probs_df["Regime"] = probs_df["Regime"].replace({"Unknown": "Neutral"})
-
     bar = (
         alt.Chart(probs_df)
         .mark_bar()
@@ -688,20 +670,18 @@ with ch2:
 
 st.write("")
 
-# How it works
+# How to use + Beta note (tight, clear)
 st.markdown(
     """
 <div class="card">
-  <div class="card-title">How it works</div>
-  <div style="opacity:0.92; line-height:1.55;">
-    <b>Purpose:</b> Filter market conditions so you avoid trading low-edge regimes.<br/>
-    <b>ENTRY alert:</b> The AI gate opens (conditions become favourable).<br/>
-    <b>EXIT alert:</b> The AI gate closes (conditions deteriorate).<br/>
-    <b>Neutral is common:</b> Often consolidation — low edge is normal.<br/>
+  <div class="card-title">How to use this</div>
+  <div style="opacity:0.92; line-height:1.6;">
+    • <b>ENTRY</b> → Conditions turned favourable (green light)<br/>
+    • <b>EXIT</b> → Conditions deteriorated (red light)<br/>
+    • <b>Neutral</b> is common — usually consolidation / low edge<br/>
+    • Alerts are intentionally infrequent<br/>
     <div class="hr"></div>
-    <span style="opacity:0.75;">Decision support only • Not financial advice.</span>
-    <b>Beta note:</b> Model is trained primarily on BTC; cross-asset support is enabled and will be refined per-asset.
-
+    <b>Beta note:</b> Model is trained primarily on BTC; cross-asset support is enabled during beta and will be refined per-asset.
   </div>
 </div>
 """,
@@ -710,11 +690,17 @@ st.markdown(
 
 st.write("")
 
-# Recent confidence chart + details table
+# ==============================
+# REGIME CONFIDENCE (RECENT) — FIXED + ROBUST
+# ==============================
 hist_df = pd.DataFrame(st.session_state.signal_history)
-hist_df = hist_df[(hist_df["ticker"] == ticker) & (hist_df["mode"] == mode)].copy() if not hist_df.empty else hist_df
 
-if not hist_df.empty:
+if hist_df.empty:
+    st.info("Regime confidence (recent) will appear after a few refreshes. Leave the dashboard open for ~2–3 cycles.")
+else:
+    hist_df = hist_df[(hist_df["ticker"] == ticker) & (hist_df["mode"] == mode)].copy()
+
+    # robust parse time into datetime
     hist_df["time_dt"] = pd.to_datetime(
         hist_df["time"].astype(str).str.replace(" UTC", "", regex=False),
         errors="coerce",
@@ -722,23 +708,14 @@ if not hist_df.empty:
     ).dt.tz_convert(None)
 
     hist_df = (
-        hist_df
-        .dropna(subset=["time_dt"])
+        hist_df.dropna(subset=["time_dt"])
         .sort_values("time_dt")
         .tail(160)
     )
 
     if len(hist_df) < 3:
-        st.info(
-            "Regime confidence (recent) will appear after a few refreshes. "
-            "Leave the dashboard open for ~2–3 cycles."
-        )
-else:
-    st.info("No signal history yet.")
-
-
-
-    if not hist_df.empty:
+        st.info("Regime confidence (recent) will appear after a few refreshes. Leave the dashboard open for ~2–3 cycles.")
+    else:
         st.markdown('<div class="card"><div class="card-title">Regime confidence (recent)</div>', unsafe_allow_html=True)
 
         long_df = hist_df.melt(
@@ -756,7 +733,11 @@ else:
                 x=alt.X("time_dt:T", title=""),
                 y=alt.Y("value:Q", scale=alt.Scale(domain=[0, 1]), title=""),
                 color=alt.Color("metric:N", title=""),
-                tooltip=[alt.Tooltip("time_dt:T"), alt.Tooltip("metric:N"), alt.Tooltip("value:Q", format=".3f")],
+                tooltip=[
+                    alt.Tooltip("time_dt:T"),
+                    alt.Tooltip("metric:N"),
+                    alt.Tooltip("value:Q", format=".3f"),
+                ],
             )
             .properties(height=220)
         )
@@ -764,9 +745,10 @@ else:
         st.markdown("</div>", unsafe_allow_html=True)
 
 with st.expander("Recent signals (details)"):
-    if not hist_df.empty:
+    if hist_df.empty:
+        st.write("No signals yet.")
+    else:
         show_df = hist_df.drop(columns=["time_dt"], errors="ignore").copy()
-
         rename_map = {
             "p_trend": "Trend",
             "p_neutral": "Neutral",
@@ -779,6 +761,3 @@ with st.expander("Recent signals (details)"):
         }
         show_df = show_df.rename(columns={k: v for k, v in rename_map.items() if k in show_df.columns})
         st.dataframe(show_df[::-1].tail(80), use_container_width=True)
-    else:
-        st.write("No signals yet.")
-
