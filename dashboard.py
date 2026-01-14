@@ -256,8 +256,12 @@ with st.sidebar.expander("Unlock Pro"):
         else:
             st.error("Invalid key.")
 
-if st.sidebar.button("Join early access / feedback", use_container_width=True):
-    st.sidebar.info("Send feedback — pricing + access will be announced soon.")
+st.sidebar.markdown("---")
+st.sidebar.markdown(
+    f"[🚀 Join Early Access & Give Feedback]({ 'https://docs.google.com/forms/d/e/1FAIpQLSfIN-cLK4wvpIR6ZEcSrjqaYEisap0u0Pz3ePz8sDxveICeUg/viewform?usp=dialog' })",
+    unsafe_allow_html=True
+)
+
 
 st.sidebar.markdown("### Market")
 _ = st.sidebar.selectbox("Universe", ["Crypto"], index=0, disabled=True)
