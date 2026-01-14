@@ -222,8 +222,16 @@ _ = st.sidebar.selectbox("Universe", ["Crypto"], index=0, disabled=True)
 SUPPORTED_ASSETS = {
     "BTC-USD": "Bitcoin (BTC)",
     "ETH-USD": "Ethereum (ETH)",
+    "BNB-USD": "BNB (BNB)",
     "SOL-USD": "Solana (SOL)",
+    "XRP-USD": "XRP (XRP)",
+    "ADA-USD": "Cardano (ADA)",
+    "AVAX-USD": "Avalanche (AVAX)",
+    "DOGE-USD": "Dogecoin (DOGE)",
+    "LINK-USD": "Chainlink (LINK)",
+    "MATIC-USD": "Polygon (MATIC)",
 }
+
 
 st.sidebar.markdown("### Asset")
 ticker = st.sidebar.selectbox(
@@ -232,7 +240,8 @@ ticker = st.sidebar.selectbox(
     format_func=lambda k: SUPPORTED_ASSETS.get(k, k),
     index=0,
 )
-st.sidebar.caption("Supported assets (MVP): BTC, ETH, SOL")
+st.sidebar.caption("Supported assets (Beta): Top 10 majors")
+
 
 st.sidebar.markdown("### Strategy")
 mode = st.sidebar.selectbox("Risk profile", ["balanced", "conservative", "ma_only"], index=0)
@@ -691,6 +700,8 @@ st.markdown(
     <b>Neutral is common:</b> Often consolidation — low edge is normal.<br/>
     <div class="hr"></div>
     <span style="opacity:0.75;">Decision support only • Not financial advice.</span>
+    <b>Beta note:</b> Model is trained primarily on BTC; cross-asset support is enabled and will be refined per-asset.
+
   </div>
 </div>
 """,
